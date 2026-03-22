@@ -1,0 +1,12 @@
+{
+  "name": "kaamelott-splicer",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/analyzer.test.mjs"
+  },
+  "devDependencies": {
+    "music-metadata": "^10.0.0",
+    "node-web-audio-api": "^0.21.0"
+  }
+}
