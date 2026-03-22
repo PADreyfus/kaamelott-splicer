@@ -7,13 +7,144 @@ function save(){try{localStorage.setItem('km',JSON.stringify({comps,eps,removed:
 function load(){try{const d=JSON.parse(localStorage.getItem('km'));if(d){comps=d.comps||[];eps=d.eps||[];removed=new Set(d.removed||[])}}catch(e){}}
 function fmt(s){if(!isFinite(s)||s<0)return'0:00';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.floor(s%60);return h>0?h+':'+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0'):m+':'+String(sec).padStart(2,'0')}
 
-// ===================== JINGLE DETECTION =====================
-// Find the sharpest quiet→loud energy transition in each search window.
-// ratio = max(next 400ms) / avg(previous 800ms)
-// The jingle horn blast after inter-episode silence always produces
-// the highest ratio in its 3-4 min search window.
-// Split placed 1s before the detected horn (in the silence gap).
+// ===================== SPECTRUM / FFT UTILITIES =====================
+// Cooley-Tukey radix-2 in-place FFT. re/im must be Float32Array of length 2^n.
+function fft(re, im) {
+  const n = re.length;
+  // bit-reversal permutation
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      let t = re[i]; re[i] = re[j]; re[j] = t;
+      t = im[i]; im[i] = im[j]; im[j] = t;
+    }
+  }
+  // butterfly stages
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wRe = Math.cos(ang), wIm = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cRe = 1, cIm = 0;
+      for (let j = 0; j < (len >> 1); j++) {
+        const uRe = re[i + j], uIm = im[i + j];
+        const k = i + j + (len >> 1);
+        const vRe = re[k] * cRe - im[k] * cIm;
+        const vIm = re[k] * cIm + im[k] * cRe;
+        re[i + j] = uRe + vRe; im[i + j] = uIm + vIm;
+        re[k] = uRe - vRe; im[k] = uIm - vIm;
+        const nRe = cRe * wRe - cIm * wIm;
+        cIm = cRe * wIm + cIm * wRe; cRe = nRe;
+      }
+    }
+  }
+}
 
+// Compute block-level log-magnitude spectral features from PCM.
+// Returns an array of Float32Array(N_BANDS) — one per non-overlapping block.
+// FFT_SIZE = 1024 samples (~128ms at 8kHz); 24 log-spaced bands 50–4000 Hz.
+const FFT_SIZE = 1024;
+const N_BANDS = 24;
+function blockFeatures(pcm, sr) {
+  const halfN = FFT_SIZE >> 1;
+  const loHz = 50, hiHz = Math.min(4000, sr / 2);
+  const loBin = Math.max(1, Math.round(loHz * FFT_SIZE / sr));
+  const hiBin = Math.min(halfN - 1, Math.round(hiHz * FFT_SIZE / sr));
+  // Pre-compute log-spaced band edges (bin indices)
+  const edges = new Uint16Array(N_BANDS + 1);
+  for (let b = 0; b <= N_BANDS; b++) {
+    edges[b] = Math.round(loBin * Math.pow(hiBin / loBin, b / N_BANDS));
+  }
+  const re = new Float32Array(FFT_SIZE);
+  const im = new Float32Array(FFT_SIZE);
+  const nBlocks = Math.floor(pcm.length / FFT_SIZE);
+  const feats = [];
+  for (let b = 0; b < nBlocks; b++) {
+    const off = b * FFT_SIZE;
+    // Hanning window + copy into re
+    for (let i = 0; i < FFT_SIZE; i++) {
+      const w = 0.5 * (1 - Math.cos(2 * Math.PI * i / (FFT_SIZE - 1)));
+      re[i] = pcm[off + i] * w;
+      im[i] = 0;
+    }
+    fft(re, im);
+    const bands = new Float32Array(N_BANDS);
+    for (let band = 0; band < N_BANDS; band++) {
+      const lo = edges[band], hi = edges[band + 1];
+      let sum = 0;
+      for (let k = lo; k <= hi; k++) sum += Math.sqrt(re[k]*re[k] + im[k]*im[k]);
+      const cnt = hi - lo + 1;
+      bands[band] = Math.log1p(sum / cnt);
+    }
+    feats.push(bands);
+  }
+  return feats;
+}
+
+// ===================== JINGLE FINGERPRINT =====================
+let jingleFp = null; // { features: Float32Array[], blockCount, blockSec, norm }
+
+async function loadJingleFp() {
+  try {
+    const resp = await fetch('data/jingle.wav', { cache: 'force-cache' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const ab = await resp.arrayBuffer();
+    let ctx;
+    try { ctx = new AudioContext({ sampleRate: 8000 }); } catch(e) {
+      try { ctx = new AudioContext({ sampleRate: 22050 }); } catch(e2) { ctx = new AudioContext(); }
+    }
+    const buf = await ctx.decodeAudioData(ab);
+    ctx.close();
+    const pcm = buf.getChannelData(0);
+    const features = blockFeatures(pcm, buf.sampleRate);
+    if (features.length < 2) throw new Error('Jingle trop court');
+    // Pre-compute global L2 norm of the jingle feature sequence
+    let norm2 = 0;
+    for (const f of features) for (let i = 0; i < N_BANDS; i++) norm2 += f[i] * f[i];
+    jingleFp = { features, blockCount: features.length, blockSec: FFT_SIZE / buf.sampleRate, norm: Math.sqrt(norm2) };
+    fpUrl = 'data/jingle.wav';
+    document.getElementById('fpArea').style.display = '';
+    log('♪ Jingle chargé: ' + fmt(buf.duration) + ' (' + features.length + ' blocs)');
+  } catch(e) {
+    log('⚠ Jingle spectre indispo: ' + e.message + ' (fallback énergie)');
+    jingleFp = null;
+  }
+}
+
+// Fuzzy match: slide jingle fingerprint over audio PCM, return best NCC match.
+// Returns { timeSec, score } or null if no good match found.
+const NCC_THRESHOLD = 0.45;
+function spectralMatchInSlice(audioPcm, audioSR) {
+  if (!jingleFp || jingleFp.blockCount < 2) return null;
+  const audioFeats = blockFeatures(audioPcm, audioSR);
+  const J = jingleFp.blockCount;
+  const N = audioFeats.length;
+  if (N < J) return null;
+  const jFeats = jingleFp.features;
+  const jNorm = jingleFp.norm;
+  let bestScore = -1, bestOffset = -1;
+  for (let o = 0; o <= N - J; o++) {
+    // dot product
+    let dot = 0;
+    for (let t = 0; t < J; t++) {
+      const jf = jFeats[t], af = audioFeats[o + t];
+      for (let b = 0; b < N_BANDS; b++) dot += jf[b] * af[b];
+    }
+    // L2 norm of audio window
+    let aNorm2 = 0;
+    for (let t = 0; t < J; t++) {
+      const af = audioFeats[o + t];
+      for (let b = 0; b < N_BANDS; b++) aNorm2 += af[b] * af[b];
+    }
+    const score = dot / (jNorm * Math.sqrt(aNorm2) + 1e-9);
+    if (score > bestScore) { bestScore = score; bestOffset = o; }
+  }
+  if (bestScore < NCC_THRESHOLD) return null;
+  return { timeSec: bestOffset * jingleFp.blockSec, score: bestScore };
+}
+
+// ===================== JINGLE DETECTION =====================
 function findMp3Sync(bytes, off) {
   for (let i = Math.max(0,off); i < bytes.length - 3; i++) {
     if (bytes[i]!==0xFF||(bytes[i+1]&0xE0)!==0xE0) continue;
@@ -23,38 +154,6 @@ function findMp3Sync(bytes, off) {
   return -1;
 }
 
-function findJingleInSlice(pcm, sr) {
-  const frameSz = Math.round(sr * 0.05);
-  const energy = [];
-  for (let i = 0; i < pcm.length; i += frameSz) {
-    const end = Math.min(i + frameSz, pcm.length);
-    let sum = 0;
-    for (let j = i; j < end; j++) sum += pcm[j]*pcm[j];
-    energy.push(Math.sqrt(sum/(end-i)));
-  }
-  if (energy.length < 30) return -1;
-
-  const NB = 16;       // 800ms lookback
-  const NA = 8;        // 400ms lookahead
-  const FLOOR = 0.01;  // minimum denominator
-  const MIN_RATIO = 2.0;
-
-  let bestRatio = 0, bestFrame = -1;
-  for (let i = NB; i < energy.length - NA; i++) {
-    let bSum = 0;
-    for (let j = i - NB; j < i; j++) bSum += energy[j];
-    const before = bSum / NB;
-    let after = 0;
-    for (let k = i; k < i + NA; k++) {
-      if (energy[k] > after) after = energy[k];
-    }
-    const ratio = after / Math.max(before, FLOOR);
-    if (ratio > bestRatio) { bestRatio = ratio; bestFrame = i; }
-  }
-
-  if (bestFrame < 0 || bestRatio < MIN_RATIO) return -1;
-  return Math.max(0, bestFrame * 0.05 - 1.0);
-}
 
 async function analyzeFile(url, fileAB, onProgress, onStatus) {
   const bytes = new Uint8Array(fileAB);
@@ -93,7 +192,11 @@ async function analyzeFile(url, fileAB, onProgress, onStatus) {
       const buf = await ctx.decodeAudioData(slice.slice(0));
       const pcm = buf.getChannelData(0);
       const actualSliceStart = sliceStartByte / bps;
-      const hitInSlice = findJingleInSlice(pcm, ctx.sampleRate);
+      let hitInSlice = -1;
+      if (jingleFp) {
+        const m = spectralMatchInSlice(pcm, ctx.sampleRate);
+        if (m) { hitInSlice = m.timeSec; log('NCC='+m.score.toFixed(2)); }
+      }
       if (hitInSlice >= 0) {
         const absTime = actualSliceStart + hitInSlice;
         if (absTime > lastJ + 140 && absTime < lastJ + 260) {
@@ -129,12 +232,11 @@ function togPause(){if(!curEp){playRand();return}if(playing){audio.pause();if(pr
 
 async function handleFiles(files){const ldA=document.getElementById('ldArea'),ldT=document.getElementById('ldTxt'),ldS=document.getElementById('ldSub'),ldF=document.getElementById('ldFill');ldA.style.display='';document.getElementById('uplArea').style.display='none';
 for(let fi=0;fi<files.length;fi++){const file=files[fi];ldT.textContent='Analyse '+(fi+1)+'/'+files.length;ldS.textContent=file.name;ldF.style.width='0%';log('━━━ '+file.name+' ━━━');
-try{const url=URL.createObjectURL(file);const cid='c'+Date.now()+'_'+fi;fileURLs[cid]=url;const ab=await file.arrayBuffer();fpUrl=url;
-const res=await analyzeFile(url,ab,p=>{ldF.style.width=Math.round(p*100)+'%'},s=>{ldS.textContent=s});
+try{const url=URL.createObjectURL(file);const cid='c'+Date.now()+'_'+fi;fileURLs[cid]=url;const ab=await file.arrayBuffer();
+await jingleFpReady;const res=await analyzeFile(url,ab,p=>{ldF.style.width=Math.round(p*100)+'%'},s=>{ldS.textContent=s});
 ldF.style.width='100%';ldS.textContent=(res.splitPoints.length-1)+' épisodes !';
 const nm=file.name.replace(/\.[^.]+$/,'');comps.push({id:cid,name:nm,totalDuration:res.totalDuration});
 for(let i=0;i<res.splitPoints.length-1;i++){const s=res.splitPoints[i],e=res.splitPoints[i+1];if(e-s<5)continue;eps.push({id:cid+'_e'+i,compilationId:cid,compilationName:nm,index:i,startSec:s,endSec:e,duration:e-s,label:'Épisode '+(i+1)})}
-document.getElementById('fpArea').style.display='';
 await new Promise(r=>setTimeout(r,300))}catch(err){log('ERREUR: '+err.message);alert('Erreur: '+err.message)}}save();ldA.style.display='none';render()}
 
 document.getElementById('bListenFP').onclick=()=>{if(!fpUrl)return;audio.src=fpUrl;audio.setAttribute('data-cid','');audio.currentTime=0;audio.play();setTimeout(()=>audio.pause(),2000)};
@@ -160,4 +262,4 @@ document.getElementById('bReset').onclick=resetAll;
 document.getElementById('mpBtn').onclick=togPause;
 document.getElementById('mpSh').onclick=()=>playRand(curEp?.id);
 audio.onerror=()=>log('ERR: '+(audio.error?.message||'?'));
-load();render();
+const jingleFpReady=loadJingleFp();load();render();
