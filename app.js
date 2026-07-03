@@ -320,6 +320,10 @@ async function analyzeFile(fileAB, onProgress, onStatus) {
   };
   const splitBytes = splits.map(byteAtTime);
   splitBytes[splitBytes.length - 1] = bytes.length;
+  // The first slice must not start at the Xing/Info metadata frame: it
+  // declares the FULL file's duration, so the browser would never fire
+  // 'ended' for that episode. Start at the first real audio frame instead.
+  if (xing) splitBytes[0] = findMp3Sync(bytes, xing.syncOff + 4);
 
   try { ctx.close(); } catch (e) {}
   onProgress(1);
@@ -386,13 +390,23 @@ function playEp(ep) {
     audio.addEventListener('loadedmetadata', () => { audio.currentTime = SKIP_INTRO_SEC; }, { once: true });
   }
   audio.onended = () => {
-    stopPlay();
-    if (!autoPlay) return;
-    if (sleepExpired()) return;
-    setTimeout(playNext, 400);
+    if (!autoPlay || sleepExpired()) { stopPlay(); return; }
+    // Chain the next episode synchronously inside the 'ended' event: on
+    // phones (locked screen / background tab) a setTimeout here is throttled
+    // and a play() started from a timer is blocked by the autoplay policy,
+    // which made playback stop after one episode.
+    playNext();
   };
-  audio.play().then(() => { playing = true; render(); trackProgress(); updateMediaSession(); })
-    .catch(() => {});
+  audio.play().then(() => {
+    playing = true;
+    render();
+    trackProgress();
+    updateMediaSession();
+  }).catch(err => {
+    console.warn('play() refusé:', err.message);
+    playing = false;
+    render();
+  });
 }
 
 function trackProgress() {
