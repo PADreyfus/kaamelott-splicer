@@ -547,7 +547,7 @@ function render() {
   $('bSkipIntro').classList.toggle('on', skipIntro);
   $('bSleep').classList.toggle('on', sleepUntil !== null);
   $('bSleep').textContent = sleepUntil !== null
-    ? '⏾ ' + Math.max(1, Math.ceil((sleepUntil - Date.now()) / 60_000)) + ' min'
+    ? '⏾ ' + fmt(Math.max(0, (sleepUntil - Date.now()) / 1000))
     : '⏾ 30 min';
 
   // Episode list
@@ -606,8 +606,15 @@ $('bSkipIntro').onclick = () => {
   render();
 };
 $('bSleep').onclick = toggleSleep;
-// Refresh the sleep-timer countdown while armed
-setInterval(() => { if (sleepUntil !== null) render(); }, 30_000);
+// Live countdown on the sleep button while armed (also fires the pause when
+// the deadline passes with playback stopped or the tab in the background).
+setInterval(() => {
+  if (sleepUntil === null) return;
+  if (Date.now() >= sleepUntil && playing) { togglePause(); }
+  const b = $('bSleep');
+  b.textContent = '⏾ ' + fmt(Math.max(0, (sleepUntil - Date.now()) / 1000));
+  if (Date.now() >= sleepUntil && !playing) { sleepUntil = null; render(); }
+}, 1000);
 
 // ===================== HOSTED EPISODES =====================
 // If the site ships pre-cut episodes (episodes/index.json), load them so the
