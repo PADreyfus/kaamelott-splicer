@@ -1,5 +1,5 @@
 /**
- * Kaamelott Splicer — load an MP3 compilation, cut it into episodes by
+ * Dodo avec Kaamelott — load an MP3 compilation, cut it into episodes by
  * detecting the three-horns intro jingle, then play episodes randomly.
  *
  * Detection strategy (validated on Livre I Tome 1):
