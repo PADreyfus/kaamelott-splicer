@@ -332,6 +332,8 @@ let sourceFiles = {};    // compilationId → File (episodes are byte slices of 
 let currentEp = null;
 let playing = false;
 let autoPlay = true;
+let skipIntro = localStorage.getItem('skipIntro') === '1';
+let sleepUntil = null; // epoch ms; playback pauses once passed
 
 const audio = document.createElement('audio');
 audio.preload = 'auto';
@@ -376,18 +378,25 @@ function playEp(ep) {
   if (!url) return;
   currentEp = ep;
   audio.src = url;
+  // Skip the three-horns intro: a small seek inside the episode's own blob.
+  // (Only the full compilation seeks badly; 2.6 s into a 3 min slice is fine.)
+  if (skipIntro) {
+    audio.addEventListener('loadedmetadata', () => { audio.currentTime = JINGLE_SEC; }, { once: true });
+  }
   audio.onended = () => {
-    const finished = currentEp;
     stopPlay();
-    if (autoPlay) setTimeout(() => playRandom(finished.id), 400);
+    if (!autoPlay) return;
+    if (sleepExpired()) return;
+    setTimeout(playNext, 400);
   };
-  audio.play().then(() => { playing = true; render(); trackProgress(); })
+  audio.play().then(() => { playing = true; render(); trackProgress(); updateMediaSession(); })
     .catch(() => {});
 }
 
 function trackProgress() {
   const tick = () => {
     if (!playing || !currentEp) return;
+    if (sleepExpired()) { togglePause(); return; }
     const elapsed = audio.currentTime;
     const pct = Math.min(100, elapsed / currentEp.duration * 100);
     $('pFill').style.width = pct + '%';
@@ -397,14 +406,47 @@ function trackProgress() {
   progressRAF = requestAnimationFrame(tick);
 }
 
-function playRandom(excludeId) {
-  const pool = episodes.filter(e => e.id !== excludeId);
-  if (!pool.length) return;
-  playEp(pool[Math.floor(Math.random() * pool.length)]);
+// Playback follows the (shuffled) list order.
+function playNext() {
+  if (!episodes.length) return;
+  const i = currentEp ? episodes.findIndex(e => e.id === currentEp.id) : -1;
+  playEp(episodes[(i + 1) % episodes.length]);
+}
+
+function shuffleEpisodes() {
+  for (let i = episodes.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [episodes[i], episodes[j]] = [episodes[j], episodes[i]];
+  }
+  render();
+  if (!playing) playNext();
+}
+
+// Sleep timer: when armed, playback pauses once the deadline passes.
+function sleepExpired() {
+  if (sleepUntil === null || Date.now() < sleepUntil) return false;
+  sleepUntil = null;
+  render();
+  return true;
+}
+
+function toggleSleep() {
+  sleepUntil = sleepUntil === null ? Date.now() + 30 * 60_000 : null;
+  render();
+}
+
+function updateMediaSession() {
+  if (!('mediaSession' in navigator) || !currentEp) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: currentEp.label, artist: 'Kaamelott', album: currentEp.compilationName,
+  });
+  navigator.mediaSession.setActionHandler('play', togglePause);
+  navigator.mediaSession.setActionHandler('pause', togglePause);
+  navigator.mediaSession.setActionHandler('nexttrack', playNext);
 }
 
 function togglePause() {
-  if (!currentEp) { playRandom(); return; }
+  if (!currentEp) { playNext(); return; }
   if (playing) {
     audio.pause();
     if (progressRAF) { cancelAnimationFrame(progressRAF); progressRAF = null; }
@@ -500,33 +542,39 @@ function render() {
   }
   $('bPlay').textContent = playing ? '⏸' : '▶';
   $('bAuto').classList.toggle('on', autoPlay);
+  $('bSkipIntro').classList.toggle('on', skipIntro);
+  $('bSleep').classList.toggle('on', sleepUntil !== null);
+  $('bSleep').textContent = sleepUntil !== null
+    ? '⏾ ' + Math.max(1, Math.ceil((sleepUntil - Date.now()) / 60_000)) + ' min'
+    : '⏾ 30 min';
 
   // Episode list
   $('epCount').textContent = episodes.length + ' épisode' + (episodes.length > 1 ? 's' : '');
   const list = $('epList');
   list.innerHTML = '';
-  const byComp = {};
-  episodes.forEach(e => { (byComp[e.compilationId] = byComp[e.compilationId] || []).push(e); });
-  for (const [cid, eps] of Object.entries(byComp)) {
-    const comp = compilations.find(c => c.id === cid);
-    const header = document.createElement('div');
-    header.className = 'comp-header';
-    header.textContent = '🏰 ' + (comp ? comp.name : cid);
-    list.appendChild(header);
-    eps.sort((a, b) => a.index - b.index).forEach(ep => {
-      const row = document.createElement('div');
-      row.className = 'ep-row' + (currentEp?.id === ep.id ? ' playing' : '');
-      const meta = ep.src
-        ? fmt(ep.duration)
-        : `${fmt(ep.startSec)} → ${fmt(ep.endSec)} · ${fmt(ep.duration)}`;
-      row.innerHTML =
-        `<button class="btn-play" data-play="${ep.id}">▶</button>` +
-        `<div class="ep-info"><div class="ep-name">${ep.label}</div>` +
-        `<div class="ep-meta">${meta}</div></div>` +
-        `<button class="btn-del" data-del="${ep.id}" title="Supprimer">✕</button>`;
-      list.appendChild(row);
-    });
-  }
+  // Render in list order — playback follows it, and 🔀 reorders it.
+  let lastComp = null;
+  episodes.forEach(ep => {
+    if (ep.compilationId !== lastComp) {
+      lastComp = ep.compilationId;
+      const comp = compilations.find(c => c.id === ep.compilationId);
+      const header = document.createElement('div');
+      header.className = 'comp-header';
+      header.textContent = '🏰 ' + (comp ? comp.name : ep.compilationName);
+      list.appendChild(header);
+    }
+    const row = document.createElement('div');
+    row.className = 'ep-row' + (currentEp?.id === ep.id ? ' playing' : '');
+    const meta = ep.src
+      ? fmt(ep.duration)
+      : `${fmt(ep.startSec)} → ${fmt(ep.endSec)} · ${fmt(ep.duration)}`;
+    row.innerHTML =
+      `<button class="btn-play" data-play="${ep.id}">▶</button>` +
+      `<div class="ep-info"><div class="ep-name">${ep.label}</div>` +
+      `<div class="ep-meta">${meta}</div></div>` +
+      `<button class="btn-del" data-del="${ep.id}" title="Supprimer">✕</button>`;
+    list.appendChild(row);
+  });
 }
 
 // ===================== EVENTS =====================
@@ -547,8 +595,17 @@ $('fileInput').addEventListener('change', e => {
 $('bLoad').onclick = () => $('fileInput').click();
 $('bMore').onclick = () => $('fileInput').click();
 $('bPlay').onclick = togglePause;
-$('bNext').onclick = () => playRandom(currentEp?.id);
+$('bNext').onclick = playNext;
+$('bShuffle').onclick = shuffleEpisodes;
 $('bAuto').onclick = () => { autoPlay = !autoPlay; render(); };
+$('bSkipIntro').onclick = () => {
+  skipIntro = !skipIntro;
+  localStorage.setItem('skipIntro', skipIntro ? '1' : '0');
+  render();
+};
+$('bSleep').onclick = toggleSleep;
+// Refresh the sleep-timer countdown while armed
+setInterval(() => { if (sleepUntil !== null) render(); }, 30_000);
 
 // ===================== HOSTED EPISODES =====================
 // If the site ships pre-cut episodes (episodes/index.json), load them so the

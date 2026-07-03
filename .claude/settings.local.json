@@ -10,7 +10,8 @@
       "PowerShell(node --check app.js)",
       "PowerShell(Set-Location *)",
       "Skill(run)",
-      "PowerShell(Get-Command *)"
+      "PowerShell(Get-Command *)",
+      "Skill(schedule)"
     ]
   }
 }
