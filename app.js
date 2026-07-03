@@ -15,7 +15,9 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const JINGLE_SEC = 2.6;      // length of the three-horns jingle
+const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
+const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
+                             // are block-identical up to ~5.3 s, diverge at ~5.5)
 const NCC_THRESHOLD = 0.65;  // minimum correlation to accept a jingle match
 const MIN_GAP = 120;         // minimum episode length in seconds
 const MIN_EPISODE = 5;       // discard segments shorter than this
@@ -378,10 +380,10 @@ function playEp(ep) {
   if (!url) return;
   currentEp = ep;
   audio.src = url;
-  // Skip the three-horns intro: a small seek inside the episode's own blob.
-  // (Only the full compilation seeks badly; 2.6 s into a 3 min slice is fine.)
+  // Skip the intro: a small seek inside the episode's own blob.
+  // (Only the full compilation seeks badly; 5 s into a 3 min slice is fine.)
   if (skipIntro) {
-    audio.addEventListener('loadedmetadata', () => { audio.currentTime = JINGLE_SEC; }, { once: true });
+    audio.addEventListener('loadedmetadata', () => { audio.currentTime = SKIP_INTRO_SEC; }, { once: true });
   }
   audio.onended = () => {
     stopPlay();
