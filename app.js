@@ -378,33 +378,32 @@ function episodeURL(ep) {
   return ep.url;
 }
 
+let epStartedAt = 0;   // when the current episode began (guards stale events)
+let endedHandled = false; // ensures one chain per episode
+
+function onEpisodeEnd() {
+  if (endedHandled) return;
+  endedHandled = true;
+  if (!autoPlay || sleepExpired()) { stopPlay(); return; }
+  // Chain synchronously inside the media event: on phones (locked screen)
+  // timers are throttled and a play() from a timer is blocked by the
+  // autoplay policy, which made playback stop after one episode.
+  playNext();
+}
+
 function playEp(ep) {
   stopPlay();
   const url = episodeURL(ep);
   if (!url) return;
   currentEp = ep;
+  epStartedAt = Date.now();
+  endedHandled = false;
   audio.src = url;
   // Skip the intro: a small seek inside the episode's own blob.
   // (Only the full compilation seeks badly; 5 s into a 3 min slice is fine.)
   if (skipIntro) {
     audio.addEventListener('loadedmetadata', () => { audio.currentTime = SKIP_INTRO_SEC; }, { once: true });
   }
-  audio.onended = () => {
-    if (!autoPlay || sleepExpired()) { stopPlay(); return; }
-    // Chain the next episode synchronously inside the 'ended' event: on
-    // phones (locked screen / background tab) a setTimeout here is throttled
-    // and a play() started from a timer is blocked by the autoplay policy,
-    // which made playback stop after one episode.
-    playNext();
-  };
-  // Fallback when 'ended' never fires (e.g. a cached copy of the old
-  // ep01.mp3 whose metadata declared the full 3 h duration): timeupdate
-  // keeps firing during background playback, so advance once we're past
-  // the episode's known duration.
-  audio.ontimeupdate = () => {
-    if (!playing || !currentEp) return;
-    if (audio.currentTime >= currentEp.duration + 0.5) audio.onended();
-  };
   audio.play().then(() => {
     playing = true;
     render();
@@ -416,6 +415,20 @@ function playEp(ep) {
     render();
   });
 }
+
+audio.onended = onEpisodeEnd;
+// Fallback when 'ended' never fires (e.g. a stale cached ep01.mp3 whose
+// metadata declared the full 3 h duration): advance once playback passes the
+// episode's known duration. The 2 s grace period ignores stale timeupdate
+// events left over from the previous episode, which still carry the old
+// (large) position right after a source switch — without it, chaining to a
+// shorter episode would instantly re-trigger the end and the second play()
+// call, being outside a media event, gets blocked on phones.
+audio.ontimeupdate = () => {
+  if (!playing || !currentEp) return;
+  if (Date.now() - epStartedAt < 2000) return;
+  if (audio.currentTime >= currentEp.duration + 0.5) onEpisodeEnd();
+};
 
 function trackProgress() {
   const tick = () => {
