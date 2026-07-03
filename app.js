@@ -416,16 +416,23 @@ function togglePause() {
 }
 
 function deleteEp(id) {
-  if (currentEp?.id === id) { stopPlay(); currentEp = null; }
   const ep = episodes.find(e => e.id === id);
-  if (ep?.url) URL.revokeObjectURL(ep.url);
+  if (!ep) return;
+  if (!confirm(`Supprimer définitivement ${ep.label} ?`)) return;
+  if (currentEp?.id === id) { stopPlay(); currentEp = null; }
+  if (ep.url) URL.revokeObjectURL(ep.url);
   episodes = episodes.filter(e => e.id !== id);
-  // Hosted episodes: remember the deletion across visits.
-  if (ep?.file) {
+  if (ep.file) {
+    // Remember locally right away (works even without a token / while the
+    // Pages redeploy is pending), then delete on the server.
     let deleted = [];
     try { deleted = JSON.parse(localStorage.getItem('deletedEps')) || []; } catch (e) {}
     if (!deleted.includes(ep.file)) deleted.push(ep.file);
     localStorage.setItem('deletedEps', JSON.stringify(deleted));
+    serverDeleteEpisode(ep.file, ep.label)
+      .then(done => { if (done) console.log(ep.file + ' supprimé du serveur'); })
+      .catch(err => alert('Suppression serveur échouée: ' + err.message +
+        '\n(L\'épisode reste masqué sur cet appareil.)'));
   }
   render();
 }
@@ -473,9 +480,13 @@ async function handleFiles(files) {
 
 // ===================== RENDER =====================
 
+// While the hosted-episodes check is in flight, show neither the upload card
+// nor an empty player — avoids flashing "load a file" on slow connections.
+let hostedChecked = false;
+
 function render() {
   const has = episodes.length > 0;
-  $('uploadArea').style.display = has ? 'none' : '';
+  $('uploadArea').style.display = (has || !hostedChecked) ? 'none' : '';
   $('playerArea').style.display = has ? '' : 'none';
 
   // Now playing
@@ -541,16 +552,15 @@ $('bAuto').onclick = () => { autoPlay = !autoPlay; render(); };
 
 // ===================== HOSTED EPISODES =====================
 // If the site ships pre-cut episodes (episodes/index.json), load them so the
-// player is ready immediately — no file upload or analysis needed. Deleted
-// episodes are remembered in localStorage.
+// player is ready immediately — no file upload or analysis needed.
 async function loadHostedEpisodes() {
   let idx;
   try {
     const resp = await fetch('episodes/index.json', { cache: 'no-cache' });
-    if (!resp.ok) return;
+    if (!resp.ok) { hostedChecked = true; render(); return; }
     idx = await resp.json();
   } catch (e) {
-    return; // no hosted episodes — upload mode
+    hostedChecked = true; render(); return; // no hosted episodes — upload mode
   }
   let deleted = [];
   try { deleted = JSON.parse(localStorage.getItem('deletedEps')) || []; } catch (e) {}
@@ -564,7 +574,74 @@ async function loadHostedEpisodes() {
       label: e.label, src: 'episodes/' + e.file, file: e.file,
     });
   });
+  hostedChecked = true;
   render();
+}
+
+// ===================== SERVER-SIDE DELETE =====================
+// Deleting a hosted episode commits the removal to the GitHub repo (episode
+// file + its index.json entry), so it is gone for every device once Pages
+// redeploys. Needs a fine-grained personal access token (Contents:
+// read/write on this repo), asked once and kept in localStorage.
+const GH_REPO = 'PADreyfus/kaamelott-splicer';
+
+function ghToken() {
+  let t = localStorage.getItem('ghToken');
+  if (!t) {
+    t = prompt(
+      'Pour supprimer définitivement (sur le serveur), colle un token GitHub\n' +
+      '(github.com → Settings → Developer settings → Fine-grained tokens,\n' +
+      'repo kaamelott-splicer, permission "Contents: Read and write").\n\n' +
+      'Annuler = suppression locale seulement (cet appareil).'
+    );
+    if (t) localStorage.setItem('ghToken', t.trim());
+  }
+  return t ? t.trim() : null;
+}
+
+async function ghApi(method, path, body) {
+  const resp = await fetch(`https://api.github.com/repos/${GH_REPO}/contents/${path}`, {
+    method,
+    headers: {
+      Authorization: 'Bearer ' + localStorage.getItem('ghToken'),
+      Accept: 'application/vnd.github+json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    localStorage.removeItem('ghToken'); // bad token — re-ask next time
+    throw new Error('Token GitHub invalide ou expiré');
+  }
+  if (!resp.ok && resp.status !== 404) throw new Error('GitHub API: ' + resp.status);
+  return resp.status === 404 ? null : resp.json();
+}
+
+async function serverDeleteEpisode(file, label) {
+  const token = ghToken();
+  if (!token) return false;
+  // Remove the entry from index.json
+  const idxMeta = await ghApi('GET', 'episodes/index.json');
+  if (idxMeta) {
+    const idx = JSON.parse(atob(idxMeta.content.replace(/\n/g, '')));
+    const before = idx.episodes.length;
+    idx.episodes = idx.episodes.filter(e => e.file !== file);
+    if (idx.episodes.length !== before) {
+      await ghApi('PUT', 'episodes/index.json', {
+        message: `Delete ${label} (${file})`,
+        content: btoa(JSON.stringify(idx, null, 1)),
+        sha: idxMeta.sha,
+      });
+    }
+  }
+  // Delete the episode file itself
+  const fileMeta = await ghApi('GET', 'episodes/' + file);
+  if (fileMeta) {
+    await ghApi('DELETE', 'episodes/' + file, {
+      message: `Delete ${label} audio (${file})`,
+      sha: fileMeta.sha,
+    });
+  }
+  return true;
 }
 
 render();
