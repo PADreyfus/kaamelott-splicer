@@ -397,6 +397,14 @@ function playEp(ep) {
     // which made playback stop after one episode.
     playNext();
   };
+  // Fallback when 'ended' never fires (e.g. a cached copy of the old
+  // ep01.mp3 whose metadata declared the full 3 h duration): timeupdate
+  // keeps firing during background playback, so advance once we're past
+  // the episode's known duration.
+  audio.ontimeupdate = () => {
+    if (!playing || !currentEp) return;
+    if (audio.currentTime >= currentEp.duration + 0.5) audio.onended();
+  };
   audio.play().then(() => {
     playing = true;
     render();
@@ -651,7 +659,9 @@ async function loadHostedEpisodes() {
     episodes.push({
       id: cid + '_' + e.file, compilationId: cid, compilationName: idx.compilation,
       index: i, startSec: 0, endSec: e.duration, duration: e.duration,
-      label: e.label, src: 'episodes/' + e.file, file: e.file,
+      // ?v= busts browser caches of stale audio (e.g. the old ep01.mp3 whose
+      // Xing frame declared the full 3 h duration and never fired 'ended')
+      label: e.label, src: 'episodes/' + e.file + '?v=2', file: e.file,
     });
   });
   hostedChecked = true;
