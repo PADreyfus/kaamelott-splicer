@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(npm install)",
-      "Bash(node --test:*)"
+      "Bash(node --test:*)",
+      "Bash(npm test:*)",
+      "Bash(node:*)",
+      "mcp__Claude_Preview__preview_start",
+      "PowerShell(npx http-server . -p 8080 -c-1)",
+      "PowerShell(node --check app.js)",
+      "PowerShell(Set-Location *)",
+      "Skill(run)",
+      "PowerShell(Get-Command *)"
     ]
   }
 }
