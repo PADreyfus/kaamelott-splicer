@@ -356,11 +356,12 @@ function stopPlay() {
   render();
 }
 
-// Each episode plays as its own MP3 blob: the byte slice of the source file
-// between its frame-aligned split offsets. Playback starts at 0, so the
+// Each episode plays as its own MP3: either a hosted file (ep.src) or a byte
+// slice of a locally loaded compilation. Playback always starts at 0, so the
 // <audio> element never seeks — Chrome's VBR seek is 15–40 s off on the full
 // compilation (measured), byte slices are exact.
 function episodeURL(ep) {
+  if (ep.src) return ep.src;
   if (!ep.url) {
     const file = sourceFiles[ep.compilationId];
     if (!file) return null;
@@ -419,6 +420,13 @@ function deleteEp(id) {
   const ep = episodes.find(e => e.id === id);
   if (ep?.url) URL.revokeObjectURL(ep.url);
   episodes = episodes.filter(e => e.id !== id);
+  // Hosted episodes: remember the deletion across visits.
+  if (ep?.file) {
+    let deleted = [];
+    try { deleted = JSON.parse(localStorage.getItem('deletedEps')) || []; } catch (e) {}
+    if (!deleted.includes(ep.file)) deleted.push(ep.file);
+    localStorage.setItem('deletedEps', JSON.stringify(deleted));
+  }
   render();
 }
 
@@ -497,10 +505,13 @@ function render() {
     eps.sort((a, b) => a.index - b.index).forEach(ep => {
       const row = document.createElement('div');
       row.className = 'ep-row' + (currentEp?.id === ep.id ? ' playing' : '');
+      const meta = ep.src
+        ? fmt(ep.duration)
+        : `${fmt(ep.startSec)} → ${fmt(ep.endSec)} · ${fmt(ep.duration)}`;
       row.innerHTML =
         `<button class="btn-play" data-play="${ep.id}">▶</button>` +
         `<div class="ep-info"><div class="ep-name">${ep.label}</div>` +
-        `<div class="ep-meta">${fmt(ep.startSec)} → ${fmt(ep.endSec)} · ${fmt(ep.duration)}</div></div>` +
+        `<div class="ep-meta">${meta}</div></div>` +
         `<button class="btn-del" data-del="${ep.id}" title="Supprimer">✕</button>`;
       list.appendChild(row);
     });
@@ -528,4 +539,33 @@ $('bPlay').onclick = togglePause;
 $('bNext').onclick = () => playRandom(currentEp?.id);
 $('bAuto').onclick = () => { autoPlay = !autoPlay; render(); };
 
+// ===================== HOSTED EPISODES =====================
+// If the site ships pre-cut episodes (episodes/index.json), load them so the
+// player is ready immediately — no file upload or analysis needed. Deleted
+// episodes are remembered in localStorage.
+async function loadHostedEpisodes() {
+  let idx;
+  try {
+    const resp = await fetch('episodes/index.json', { cache: 'no-cache' });
+    if (!resp.ok) return;
+    idx = await resp.json();
+  } catch (e) {
+    return; // no hosted episodes — upload mode
+  }
+  let deleted = [];
+  try { deleted = JSON.parse(localStorage.getItem('deletedEps')) || []; } catch (e) {}
+  const cid = 'hosted';
+  compilations.push({ id: cid, name: idx.compilation, totalDuration: 0 });
+  idx.episodes.forEach((e, i) => {
+    if (deleted.includes(e.file)) return;
+    episodes.push({
+      id: cid + '_' + e.file, compilationId: cid, compilationName: idx.compilation,
+      index: i, startSec: 0, endSec: e.duration, duration: e.duration,
+      label: e.label, src: 'episodes/' + e.file, file: e.file,
+    });
+  });
+  render();
+}
+
 render();
+loadHostedEpisodes();
