@@ -375,6 +375,7 @@ function stopPlay() {
 // <audio> element never seeks — Chrome's VBR seek is 15–40 s off on the full
 // compilation (measured), byte slices are exact.
 function episodeURL(ep) {
+  if (ep.blobUrl) return ep.blobUrl; // fully downloaded copy (see preloadNext)
   if (ep.src) return ep.src;
   if (!ep.url) {
     const file = sourceFiles[ep.compilationId];
@@ -394,11 +395,21 @@ function nextEpOf(ep) {
   return episodes[(i + 1) % episodes.length];
 }
 
-// Load the episode that follows `ep` into the standby element so the swap at
-// 'ended' needs no network fetch (suspended on locked phones).
-function preloadNext(ep) {
+// Fully download the episode that follows `ep` (fetch → blob) and load it
+// into the standby element. preload="auto" is NOT enough: mobile browsers
+// only buffer the first seconds, so at the swap the next episode played a
+// short snippet and then stalled waiting for the (suspended) network. A blob
+// URL is served from memory — no network at all once downloaded.
+async function preloadNext(ep) {
   const nxt = nextEpOf(ep);
   if (!nxt || nxt.id === ep?.id) { preloadedEp = null; return; }
+  if (nxt.src && !nxt.blobUrl) {
+    try {
+      const resp = await fetch(nxt.src);
+      if (resp.ok) nxt.blobUrl = URL.createObjectURL(await resp.blob());
+    } catch (e) { /* fall back to streaming below */ }
+    if (nextEpOf(currentEp)?.id !== nxt.id) return; // order changed meanwhile
+  }
   const url = episodeURL(nxt);
   if (!url) { preloadedEp = null; return; }
   preloadedEp = nxt;
@@ -418,6 +429,12 @@ function onEpisodeEnd() {
 
 function playEp(ep) {
   stopPlay();
+  // Free the previous episode's downloaded copy — over a night of chained
+  // episodes the blobs would otherwise pile up in memory (~2 MB each).
+  if (currentEp && currentEp.id !== ep.id && currentEp.blobUrl) {
+    URL.revokeObjectURL(currentEp.blobUrl);
+    delete currentEp.blobUrl;
+  }
   currentEp = ep;
   epStartedAt = Date.now();
   endedHandled = false;
@@ -453,6 +470,12 @@ function playEp(ep) {
 
 players.forEach(a => {
   a.onended = function () { if (this === audio) onEpisodeEnd(); };
+  // Keep `playing` and the ▶/⏸ buttons in sync with what the element really
+  // does (lock-screen controls, OS interruptions, play() resolving late).
+  a.onplay = function () { if (this === audio) { playing = true; render(); } };
+  a.onpause = function () {
+    if (this === audio && !this.ended && !endedHandled) { playing = false; render(); }
+  };
   // Fallback when 'ended' never fires (e.g. a stale cached ep01.mp3 whose
   // metadata declared the full 3 h duration): advance once playback passes
   // the episode's known duration. The 2 s grace period ignores stale
