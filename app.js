@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v12';   // bump on every deploy (also update index.html ?v=)
+const APP_VERSION = 'v13';   // bump on every deploy (also update index.html ?v=)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -469,17 +469,20 @@ audio.onplay = () => { playing = true; render(); };
 audio.onpause = () => {
   if (!audio.ended && !endedHandled) { playing = false; render(); }
 };
-// Fallback when 'ended' never fires (e.g. a stale cached ep01.mp3 whose
-// metadata declared the full 3 h duration): advance once playback passes
-// the episode's known duration. The 2 s grace period ignores stale
-// timeupdate events left over from the previous episode, which still carry
-// the old (large) position right after a source switch — without it,
-// chaining to a shorter episode would instantly re-trigger the end and the
-// second play() call, being outside a media event, gets blocked on phones.
+// Fallback when 'ended' never fires because the file's metadata declares a
+// wildly wrong duration (the stale cached ep01.mp3 declared the full 3 h).
+// ONLY for that case: the element's own duration must disagree with the
+// episode's by a wide margin. On healthy files the browser's position
+// estimate can drift a few seconds AHEAD of real time on VBR slices — an
+// unconditional `currentTime >= duration` check therefore cropped the last
+// seconds of every episode, and, worse, made every chain run from this
+// timeupdate handler instead of the real 'ended' event, which is the one
+// transition Android allows while the screen is locked.
 audio.ontimeupdate = () => {
   if (!playing || !currentEp) return;
   if (Date.now() - epStartedAt < 2000) return;
-  if (audio.currentTime >= currentEp.duration + 0.5) onEpisodeEnd();
+  const metaBogus = !isFinite(audio.duration) || audio.duration > currentEp.duration + 30;
+  if (metaBogus && audio.currentTime >= currentEp.duration + 0.5) onEpisodeEnd();
 };
 
 function setProgressUI(elapsed) {
