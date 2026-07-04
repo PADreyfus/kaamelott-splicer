@@ -11,7 +11,8 @@
       "PowerShell(Set-Location *)",
       "Skill(run)",
       "PowerShell(Get-Command *)",
-      "Skill(schedule)"
+      "Skill(schedule)",
+      "PowerShell(git *)"
     ]
   }
 }

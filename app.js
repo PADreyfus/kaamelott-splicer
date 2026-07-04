@@ -15,6 +15,8 @@
  *    byte offset, then to the element's linear seek time.
  */
 
+const APP_VERSION = 'v12';   // bump on every deploy (also update index.html ?v=)
+
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
                              // are block-identical up to ~5.3 s, diverge at ~5.5)
@@ -497,41 +499,42 @@ function trackProgress() {
   progressRAF = requestAnimationFrame(tick);
 }
 
-// Touch/drag seeking on the progress bar. Position is applied on release —
-// inside an episode blob a seek is small and accurate (unlike the full VBR
-// compilation, which must never be seeked).
+// Touch/drag seeking on the progress bar. Handlers live on the bar itself
+// with pointer capture — document-level listeners missed parts of the touch
+// sequence on mobile. Position is applied on release; a seek inside an
+// episode blob is small and accurate (unlike the full VBR compilation,
+// which must never be seeked).
 let seeking = false;
 {
-  const bar = () => $('seekBar');
+  const bar = $('seekBar');
   const posToTime = e => {
-    const r = bar().getBoundingClientRect();
+    const r = bar.getBoundingClientRect();
     const frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
     return frac * (currentEp ? currentEp.duration : 0);
   };
-  document.addEventListener('pointerdown', e => {
-    if (!e.target.closest('#seekBar') || !currentEp) return;
+  bar.addEventListener('pointerdown', e => {
+    if (!currentEp) return;
+    e.preventDefault();
     seeking = true;
-    bar().classList.add('dragging');
-    bar().setPointerCapture?.(e.pointerId);
+    bar.classList.add('dragging');
+    try { bar.setPointerCapture(e.pointerId); } catch (err) {}
     setProgressUI(posToTime(e));
   });
-  document.addEventListener('pointermove', e => {
-    if (seeking) setProgressUI(posToTime(e));
+  bar.addEventListener('pointermove', e => {
+    if (seeking) { e.preventDefault(); setProgressUI(posToTime(e)); }
   });
-  document.addEventListener('pointerup', e => {
+  const finish = e => {
     if (!seeking) return;
     seeking = false;
-    bar().classList.remove('dragging');
+    bar.classList.remove('dragging');
     if (currentEp) {
-      const t = Math.min(posToTime(e), currentEp.duration - 1);
-      audio.currentTime = Math.max(0, t);
+      const t = Math.max(0, Math.min(posToTime(e), currentEp.duration - 1));
+      audio.currentTime = t;
       setProgressUI(t);
     }
-  });
-  document.addEventListener('pointercancel', () => {
-    seeking = false;
-    bar().classList.remove('dragging');
-  });
+  };
+  bar.addEventListener('pointerup', finish);
+  bar.addEventListener('pointercancel', finish);
 }
 
 // Playback follows the (shuffled) list order.
@@ -837,6 +840,8 @@ async function serverDeleteEpisode(file, label) {
   }
   return true;
 }
+
+$('appVersion').textContent = APP_VERSION;
 
 render();
 loadHostedEpisodes();
