@@ -341,14 +341,14 @@ let autoPlay = true;
 let skipIntro = localStorage.getItem('skipIntro') === '1';
 let sleepUntil = null; // epoch ms; playback pauses once passed
 
-// Two audio elements, double-buffered: while one plays, the next episode is
-// preloaded into the other. At 'ended' we swap and play() the already-buffered
-// element — on a locked phone, starting a fresh network load inside the ended
-// event gets suspended, which stopped playback at the end of each episode.
-const players = [document.createElement('audio'), document.createElement('audio')];
-players.forEach(a => { a.preload = 'auto'; });
-let audio = players[0];   // active element
-let standby = players[1]; // preload target
+// ONE audio element for everything. With the screen locked, Android only lets
+// a page CONTINUE its existing playback session — play() on a second/swapped
+// element is treated as a new session and blocked (tested: Galaxy S25). So
+// the next episode is fully pre-downloaded to a blob and, at 'ended', this
+// same element's src flips to that in-memory blob — the continuation pattern
+// web radios use.
+const audio = document.createElement('audio');
+audio.preload = 'auto';
 let progressRAF = null;
 
 const $ = id => document.getElementById(id);
@@ -387,7 +387,6 @@ function episodeURL(ep) {
 
 let epStartedAt = 0;   // when the current episode began (guards stale events)
 let endedHandled = false; // ensures one chain per episode
-let preloadedEp = null;   // episode currently loaded into the standby element
 
 function nextEpOf(ep) {
   if (!episodes.length) return null;
@@ -395,26 +394,26 @@ function nextEpOf(ep) {
   return episodes[(i + 1) % episodes.length];
 }
 
-// Fully download the episode that follows `ep` (fetch → blob) and load it
-// into the standby element. preload="auto" is NOT enough: mobile browsers
-// only buffer the first seconds, so at the swap the next episode played a
-// short snippet and then stalled waiting for the (suspended) network. A blob
-// URL is served from memory — no network at all once downloaded.
+// Fully download the episode that follows `ep` (fetch → blob URL) while the
+// current one plays. preload/streaming is NOT enough: with the screen off the
+// network is suspended, so anything not already in memory stalls. Once
+// downloaded, playing it is a pure in-memory src flip.
 async function preloadNext(ep) {
   const nxt = nextEpOf(ep);
-  if (!nxt || nxt.id === ep?.id) { preloadedEp = null; return; }
-  if (nxt.src && !nxt.blobUrl) {
-    try {
+  if (!nxt || nxt.id === ep?.id || nxt.blobUrl) return;
+  try {
+    let blob;
+    if (nxt.src) {
       const resp = await fetch(nxt.src);
-      if (resp.ok) nxt.blobUrl = URL.createObjectURL(await resp.blob());
-    } catch (e) { /* fall back to streaming below */ }
-    if (nextEpOf(currentEp)?.id !== nxt.id) return; // order changed meanwhile
-  }
-  const url = episodeURL(nxt);
-  if (!url) { preloadedEp = null; return; }
-  preloadedEp = nxt;
-  standby.src = url;
-  standby.load();
+      if (!resp.ok) return;
+      blob = await resp.blob();
+    } else {
+      const file = sourceFiles[nxt.compilationId];
+      if (!file) return;
+      blob = file.slice(nxt.startByte, nxt.endByte, 'audio/mpeg');
+    }
+    nxt.blobUrl = URL.createObjectURL(blob);
+  } catch (e) { /* keep streaming fallback */ }
 }
 
 function onEpisodeEnd() {
@@ -428,32 +427,25 @@ function onEpisodeEnd() {
 }
 
 function playEp(ep) {
-  stopPlay();
+  if (progressRAF) { cancelAnimationFrame(progressRAF); progressRAF = null; }
   // Free the previous episode's downloaded copy — over a night of chained
   // episodes the blobs would otherwise pile up in memory (~2 MB each).
   if (currentEp && currentEp.id !== ep.id && currentEp.blobUrl) {
     URL.revokeObjectURL(currentEp.blobUrl);
     delete currentEp.blobUrl;
   }
+  const url = episodeURL(ep);
+  if (!url) return;
   currentEp = ep;
   epStartedAt = Date.now();
   endedHandled = false;
-  if (preloadedEp?.id === ep.id) {
-    // Swap to the element that already has this episode buffered.
-    [audio, standby] = [standby, audio];
-    standby.removeAttribute('src');
-  } else {
-    const url = episodeURL(ep);
-    if (!url) return;
-    audio.src = url;
-  }
-  preloadedEp = null;
+  // Same element, new src: Android treats this as continuing the existing
+  // playback session, so it works with the screen locked.
+  audio.src = url;
   // Skip the intro: a small seek inside the episode's own blob.
   // (Only the full compilation seeks badly; 5 s into a 3 min slice is fine.)
-  const seekIntro = () => { audio.currentTime = SKIP_INTRO_SEC; };
   if (skipIntro) {
-    if (audio.readyState >= 1) seekIntro();
-    else audio.addEventListener('loadedmetadata', seekIntro, { once: true });
+    audio.addEventListener('loadedmetadata', () => { audio.currentTime = SKIP_INTRO_SEC; }, { once: true });
   }
   audio.play().then(() => {
     playing = true;
@@ -468,27 +460,25 @@ function playEp(ep) {
   });
 }
 
-players.forEach(a => {
-  a.onended = function () { if (this === audio) onEpisodeEnd(); };
-  // Keep `playing` and the ▶/⏸ buttons in sync with what the element really
-  // does (lock-screen controls, OS interruptions, play() resolving late).
-  a.onplay = function () { if (this === audio) { playing = true; render(); } };
-  a.onpause = function () {
-    if (this === audio && !this.ended && !endedHandled) { playing = false; render(); }
-  };
-  // Fallback when 'ended' never fires (e.g. a stale cached ep01.mp3 whose
-  // metadata declared the full 3 h duration): advance once playback passes
-  // the episode's known duration. The 2 s grace period ignores stale
-  // timeupdate events left over from the previous episode, which still carry
-  // the old (large) position right after a source switch — without it,
-  // chaining to a shorter episode would instantly re-trigger the end and the
-  // second play() call, being outside a media event, gets blocked on phones.
-  a.ontimeupdate = function () {
-    if (this !== audio || !playing || !currentEp) return;
-    if (Date.now() - epStartedAt < 2000) return;
-    if (this.currentTime >= currentEp.duration + 0.5) onEpisodeEnd();
-  };
-});
+audio.onended = onEpisodeEnd;
+// Keep `playing` and the ▶/⏸ buttons in sync with what the element really
+// does (lock-screen controls, OS interruptions, play() resolving late).
+audio.onplay = () => { playing = true; render(); };
+audio.onpause = () => {
+  if (!audio.ended && !endedHandled) { playing = false; render(); }
+};
+// Fallback when 'ended' never fires (e.g. a stale cached ep01.mp3 whose
+// metadata declared the full 3 h duration): advance once playback passes
+// the episode's known duration. The 2 s grace period ignores stale
+// timeupdate events left over from the previous episode, which still carry
+// the old (large) position right after a source switch — without it,
+// chaining to a shorter episode would instantly re-trigger the end and the
+// second play() call, being outside a media event, gets blocked on phones.
+audio.ontimeupdate = () => {
+  if (!playing || !currentEp) return;
+  if (Date.now() - epStartedAt < 2000) return;
+  if (audio.currentTime >= currentEp.duration + 0.5) onEpisodeEnd();
+};
 
 function trackProgress() {
   const tick = () => {
@@ -516,7 +506,7 @@ function shuffleEpisodes() {
   }
   render();
   if (!playing) playNext();
-  else preloadNext(currentEp); // order changed — refresh the standby buffer
+  else preloadNext(currentEp); // order changed — predownload the new next
 }
 
 // Sleep timer: when armed, playback pauses once the deadline passes.
