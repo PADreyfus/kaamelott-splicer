@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v14';   // bump on every deploy (also update index.html ?v=)
+const APP_VERSION = 'v15';   // bump on every deploy (also update index.html ?v=)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -387,74 +387,111 @@ function episodeURL(ep) {
   return ep.url;
 }
 
-let epStartedAt = 0;   // when the current episode began (guards stale events)
-let endedHandled = false; // ensures one chain per episode
-
 function nextEpOf(ep) {
   if (!episodes.length) return null;
   const i = ep ? episodes.findIndex(e => e.id === ep.id) : -1;
   return episodes[(i + 1) % episodes.length];
 }
 
-// Fully download the episode that follows `ep` (fetch → blob URL) while the
-// current one plays. preload/streaming is NOT enough: with the screen off the
-// network is suspended, so anything not already in memory stalls. Once
-// downloaded, playing it is a pure in-memory src flip.
-async function preloadNext(ep) {
-  const nxt = nextEpOf(ep);
-  if (!nxt || nxt.id === ep?.id || nxt.blobUrl) return;
-  try {
-    let blob;
-    if (nxt.src) {
-      const resp = await fetch(nxt.src);
-      if (!resp.ok) return;
-      blob = await resp.blob();
-    } else {
-      const file = sourceFiles[nxt.compilationId];
-      if (!file) return;
-      blob = file.slice(nxt.startByte, nxt.endByte, 'audio/mpeg');
-    }
-    nxt.blobUrl = URL.createObjectURL(blob);
-  } catch (e) { /* keep streaming fallback */ }
+// ============== GAPLESS STREAM (MediaSource) ==============
+// Every episode is appended into ONE continuous stream on ONE element. The
+// playhead glides across episode boundaries — no 'ended' event, no src
+// change, no play() call at the transition, so a locked Android has nothing
+// to block. (The src-flip-at-'ended' approach still stopped on a locked
+// Galaxy S25 even with correct durations and predownloaded audio.)
+const MSE_OK = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
+
+let ms = null, sb = null;
+let segments = [];     // [{ep, start, end}] on the stream timeline
+let appending = false; // one appendBuffer in flight at a time
+
+function currentSegment() {
+  const t = audio.currentTime;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (t >= segments[i].start - 0.05) return segments[i];
+  }
+  return segments[0] || null;
 }
 
-function onEpisodeEnd() {
-  if (endedHandled) return;
-  endedHandled = true;
-  if (!autoPlay || sleepExpired()) { stopPlay(); return; }
-  // Chain synchronously inside the media event: on phones (locked screen)
-  // timers are throttled and a play() from a timer is blocked by the
-  // autoplay policy, which made playback stop after one episode.
-  playNext();
+async function epBytes(ep) {
+  if (ep._bytes) return ep._bytes;
+  if (ep.src) {
+    const resp = await fetch(ep.src);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    ep._bytes = await resp.arrayBuffer();
+  } else {
+    const file = sourceFiles[ep.compilationId];
+    if (!file) throw new Error('fichier source absent');
+    ep._bytes = await file.slice(ep.startByte, ep.endByte).arrayBuffer();
+  }
+  return ep._bytes;
+}
+
+// Download the following episode's bytes ahead of time — appending later must
+// not depend on the network (locked phones may suspend it).
+function prefetchNext(ep) {
+  const nxt = nextEpOf(ep);
+  if (nxt && nxt.id !== ep?.id) epBytes(nxt).catch(() => {});
+}
+
+async function appendEpisode(ep) {
+  if (!sb || appending || segments.some(s => s.ep.id === ep.id)) return;
+  appending = true;
+  try {
+    const bytes = await epBytes(ep);
+    if (!sb || ms?.readyState !== 'open') return;
+    const startAt = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : 0;
+    await new Promise((ok, no) => {
+      sb.addEventListener('updateend', ok, { once: true });
+      sb.addEventListener('error', () => no(new Error('append error')), { once: true });
+      sb.appendBuffer(bytes);
+    });
+    const end = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : startAt;
+    segments.push({ ep, start: startAt, end });
+    delete ep._bytes; // free the download once it lives in the SourceBuffer
+    prefetchNext(ep);
+  } catch (e) {
+    console.warn('append:', e.message);
+  } finally {
+    appending = false;
+  }
+}
+
+function teardownStream() {
+  if (ms && ms.readyState === 'open') { try { ms.endOfStream(); } catch (e) {} }
+  ms = null; sb = null; segments = [];
 }
 
 function playEp(ep) {
   if (progressRAF) { cancelAnimationFrame(progressRAF); progressRAF = null; }
-  // Free the previous episode's downloaded copy — over a night of chained
-  // episodes the blobs would otherwise pile up in memory (~2 MB each).
-  if (currentEp && currentEp.id !== ep.id && currentEp.blobUrl) {
-    URL.revokeObjectURL(currentEp.blobUrl);
-    delete currentEp.blobUrl;
-  }
-  const url = episodeURL(ep);
-  if (!url) return;
   currentEp = ep;
-  epStartedAt = Date.now();
-  endedHandled = false;
-  // Same element, new src: Android treats this as continuing the existing
-  // playback session, so it works with the screen locked.
-  audio.src = url;
-  // Skip the intro: a small seek inside the episode's own blob.
-  // (Only the full compilation seeks badly; 5 s into a 3 min slice is fine.)
-  if (skipIntro) {
-    audio.addEventListener('loadedmetadata', () => { audio.currentTime = SKIP_INTRO_SEC; }, { once: true });
+  if (MSE_OK) {
+    teardownStream();
+    ms = new MediaSource();
+    audio.src = URL.createObjectURL(ms);
+    ms.addEventListener('sourceopen', () => {
+      URL.revokeObjectURL(audio.src);
+      sb = ms.addSourceBuffer('audio/mpeg');
+      // Each MP3's internal timeline starts at 0 — sequence mode stacks
+      // appends one after another instead of overlapping them.
+      sb.mode = 'sequence';
+      appendEpisode(ep).then(() => {
+        if (skipIntro && segments.length) audio.currentTime = segments[0].start + SKIP_INTRO_SEC;
+      });
+    }, { once: true });
+  } else {
+    const url = episodeURL(ep); // legacy fallback (no MediaSource, e.g. old iOS)
+    if (!url) return;
+    audio.src = url;
+    if (skipIntro) {
+      audio.addEventListener('loadedmetadata', () => { audio.currentTime = SKIP_INTRO_SEC; }, { once: true });
+    }
   }
   audio.play().then(() => {
     playing = true;
     render();
     trackProgress();
     updateMediaSession();
-    preloadNext(ep);
   }).catch(err => {
     console.warn('play() refusé:', err.message);
     playing = false;
@@ -462,28 +499,70 @@ function playEp(ep) {
   });
 }
 
-audio.onended = onEpisodeEnd;
 // Keep `playing` and the ▶/⏸ buttons in sync with what the element really
 // does (lock-screen controls, OS interruptions, play() resolving late).
 audio.onplay = () => { playing = true; render(); };
-audio.onpause = () => {
-  if (!audio.ended && !endedHandled) { playing = false; render(); }
+audio.onpause = () => { if (!audio.ended) { playing = false; render(); } };
+// Legacy fallback only: chain on 'ended' (MSE never ends its stream).
+audio.onended = () => {
+  if (MSE_OK) { stopPlay(); return; }
+  if (!autoPlay || sleepExpired()) { stopPlay(); return; }
+  playNext();
 };
-// Fallback when 'ended' never fires because the file's metadata declares a
-// wildly wrong duration (the stale cached ep01.mp3 declared the full 3 h).
-// ONLY for that case: the element's own duration must disagree with the
-// episode's by a wide margin. On healthy files the browser's position
-// estimate can drift a few seconds AHEAD of real time on VBR slices — an
-// unconditional `currentTime >= duration` check therefore cropped the last
-// seconds of every episode, and, worse, made every chain run from this
-// timeupdate handler instead of the real 'ended' event, which is the one
-// transition Android allows while the screen is locked.
+
+// timeupdate keeps firing during locked-screen audio playback (unlike RAF,
+// which freezes) — it drives everything that must work while locked:
+// episode-boundary bookkeeping, buffering ahead, sleep timer, memory trim.
 audio.ontimeupdate = () => {
-  if (!playing || !currentEp) return;
-  if (Date.now() - epStartedAt < 2000) return;
-  const metaBogus = !isFinite(audio.duration) || audio.duration > currentEp.duration + 30;
-  if (metaBogus && audio.currentTime >= currentEp.duration + 0.5) onEpisodeEnd();
+  if (!currentEp) return;
+  if (playing && sleepExpired()) { togglePause(); return; }
+  if (!MSE_OK || !segments.length) return;
+
+  // Crossed into the next segment? Update state — playback itself just glides.
+  const seg = currentSegment();
+  if (seg && seg.ep.id !== currentEp.id) {
+    currentEp = seg.ep;
+    if (skipIntro && audio.currentTime < seg.start + SKIP_INTRO_SEC - 0.3) {
+      audio.currentTime = seg.start + SKIP_INTRO_SEC;
+    }
+    updateMediaSession();
+    render();
+  }
+
+  // Playing the last buffered episode → append the following one now (its
+  // bytes were prefetched, so this needs no network).
+  const last = segments[segments.length - 1];
+  if (seg && seg.ep.id === last.ep.id) {
+    if (autoPlay) {
+      const nxt = nextEpOf(last.ep);
+      if (nxt && nxt.id !== last.ep.id) appendEpisode(nxt);
+    } else if (audio.currentTime >= seg.end - 0.1) {
+      stopPlay(); // Auto off: stop at the end of the episode
+    }
+  }
+
+  // Trim played audio so a whole night stays flat in memory; drop segment
+  // records that are entirely behind the trim point.
+  if (sb && !sb.updating && sb.buffered.length) {
+    const start = sb.buffered.start(0);
+    if (audio.currentTime - start > 180) {
+      const upTo = audio.currentTime - 60;
+      try { sb.remove(start, upTo); segments = segments.filter(s => s.end > upTo); } catch (e) {}
+    }
+  }
 };
+// If we ever stall at the buffer's edge (append missed its window), retry —
+// the moment data lands, playback resumes on its own.
+audio.onwaiting = () => {
+  if (!MSE_OK || !autoPlay || !segments.length) return;
+  const nxt = nextEpOf(segments[segments.length - 1].ep);
+  if (nxt) appendEpisode(nxt);
+};
+
+function segElapsed() {
+  const seg = MSE_OK ? currentSegment() : null;
+  return seg ? audio.currentTime - seg.start : audio.currentTime;
+}
 
 function setProgressUI(elapsed) {
   const pct = Math.min(100, Math.max(0, elapsed / currentEp.duration * 100));
@@ -495,8 +574,7 @@ function setProgressUI(elapsed) {
 function trackProgress() {
   const tick = () => {
     if (!playing || !currentEp) return;
-    if (sleepExpired()) { togglePause(); return; }
-    if (!seeking) setProgressUI(audio.currentTime);
+    if (!seeking) setProgressUI(segElapsed());
     progressRAF = requestAnimationFrame(tick);
   };
   progressRAF = requestAnimationFrame(tick);
@@ -532,7 +610,10 @@ let seeking = false;
     bar.classList.remove('dragging');
     if (currentEp) {
       const t = Math.max(0, Math.min(posToTime(e), currentEp.duration - 1));
-      audio.currentTime = t;
+      // In MSE mode the element timeline is the whole stream: offset into
+      // the current episode's segment.
+      const seg = MSE_OK ? currentSegment() : null;
+      audio.currentTime = seg ? seg.start + t : t;
       setProgressUI(t);
     }
   };
@@ -553,7 +634,7 @@ function shuffleEpisodes() {
   }
   render();
   if (!playing) playNext();
-  else preloadNext(currentEp); // order changed — predownload the new next
+  else prefetchNext(currentEp); // order changed — predownload the new next
 }
 
 // Sleep timer: when armed, playback pauses once the deadline passes.
