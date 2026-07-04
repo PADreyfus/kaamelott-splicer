@@ -12,7 +12,8 @@
       "Skill(run)",
       "PowerShell(Get-Command *)",
       "Skill(schedule)",
-      "PowerShell(git *)"
+      "PowerShell(git *)",
+      "PowerShell(gh run *)"
     ]
   }
 }

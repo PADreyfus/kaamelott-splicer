@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v13';   // bump on every deploy (also update index.html ?v=)
+const APP_VERSION = 'v14';   // bump on every deploy (also update index.html ?v=)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -771,7 +771,7 @@ async function loadHostedEpisodes() {
       index: i, startSec: 0, endSec: e.duration, duration: e.duration,
       // ?v= busts browser caches of stale audio (e.g. the old ep01.mp3 whose
       // Xing frame declared the full 3 h duration and never fired 'ended')
-      label: e.label, src: 'episodes/' + e.file + '?v=2', file: e.file,
+      label: e.label, src: 'episodes/' + e.file + '?v=3', file: e.file,
     });
   });
   hostedChecked = true;
