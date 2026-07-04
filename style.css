@@ -102,6 +102,51 @@ h1 {
   transition: width 0.2s;
 }
 
+/* Touchable seek bar: bigger hit zone + a knob at the playhead */
+.progress.seekable {
+  position: relative;
+  overflow: visible;
+  cursor: pointer;
+  /* enlarge the touch target without growing the visible bar */
+  padding: 14px 0;
+  height: auto;
+  background: none;
+  margin-top: 4px;
+  touch-action: none; /* horizontal drags seek instead of scrolling the page */
+}
+.progress.seekable::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  top: 14px;
+  height: 6px;
+  background: #2a2219;
+  border-radius: 3px;
+}
+.progress.seekable .progress-fill {
+  position: absolute;
+  left: 0;
+  top: 14px;
+  height: 6px;
+  border-radius: 3px;
+}
+.progress.seekable.dragging .progress-fill { transition: none; }
+.progress-knob {
+  position: absolute;
+  top: 17px;
+  left: 0%;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background: var(--gold-light);
+  box-shadow: 0 0 6px rgba(200, 145, 58, 0.6);
+  transition: left 0.2s;
+  pointer-events: none;
+}
+.progress.seekable.dragging .progress-knob { transition: none; }
+
 /* Now playing */
 .now-playing { background: rgba(200, 145, 58, 0.06); }
 .np-title { font-size: 18px; color: var(--gold-light); }

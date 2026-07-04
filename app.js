@@ -480,17 +480,58 @@ audio.ontimeupdate = () => {
   if (audio.currentTime >= currentEp.duration + 0.5) onEpisodeEnd();
 };
 
+function setProgressUI(elapsed) {
+  const pct = Math.min(100, Math.max(0, elapsed / currentEp.duration * 100));
+  $('pFill').style.width = pct + '%';
+  $('pKnob').style.left = pct + '%';
+  $('tElapsed').textContent = fmt(elapsed);
+}
+
 function trackProgress() {
   const tick = () => {
     if (!playing || !currentEp) return;
     if (sleepExpired()) { togglePause(); return; }
-    const elapsed = audio.currentTime;
-    const pct = Math.min(100, elapsed / currentEp.duration * 100);
-    $('pFill').style.width = pct + '%';
-    $('tElapsed').textContent = fmt(elapsed);
+    if (!seeking) setProgressUI(audio.currentTime);
     progressRAF = requestAnimationFrame(tick);
   };
   progressRAF = requestAnimationFrame(tick);
+}
+
+// Touch/drag seeking on the progress bar. Position is applied on release —
+// inside an episode blob a seek is small and accurate (unlike the full VBR
+// compilation, which must never be seeked).
+let seeking = false;
+{
+  const bar = () => $('seekBar');
+  const posToTime = e => {
+    const r = bar().getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    return frac * (currentEp ? currentEp.duration : 0);
+  };
+  document.addEventListener('pointerdown', e => {
+    if (!e.target.closest('#seekBar') || !currentEp) return;
+    seeking = true;
+    bar().classList.add('dragging');
+    bar().setPointerCapture?.(e.pointerId);
+    setProgressUI(posToTime(e));
+  });
+  document.addEventListener('pointermove', e => {
+    if (seeking) setProgressUI(posToTime(e));
+  });
+  document.addEventListener('pointerup', e => {
+    if (!seeking) return;
+    seeking = false;
+    bar().classList.remove('dragging');
+    if (currentEp) {
+      const t = Math.min(posToTime(e), currentEp.duration - 1);
+      audio.currentTime = Math.max(0, t);
+      setProgressUI(t);
+    }
+  });
+  document.addEventListener('pointercancel', () => {
+    seeking = false;
+    bar().classList.remove('dragging');
+  });
 }
 
 // Playback follows the (shuffled) list order.
