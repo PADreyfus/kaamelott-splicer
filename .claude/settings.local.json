@@ -13,7 +13,9 @@
       "PowerShell(Get-Command *)",
       "Skill(schedule)",
       "PowerShell(git *)",
-      "PowerShell(gh run *)"
+      "PowerShell(gh run *)",
+      "Read(//c/Users/dreyf/AppData/Local/Temp/claude/C--Users-dreyf-my-repo-kaamelott-splicer//**)",
+      "Read(//c/Users/dreyf/AppData/Local/Temp/claude/C--Users-dreyf-my-repo-kaamelott-splicer/**)"
     ]
   }
 }

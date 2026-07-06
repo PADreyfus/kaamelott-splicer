@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v15';   // bump on every deploy (also update index.html ?v=)
+const APP_VERSION = 'v16';   // bump on every deploy (also update index.html ?v=)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -413,25 +413,85 @@ function currentSegment() {
   return segments[0] || null;
 }
 
+// A fetch on a locked phone can hang forever (network suspended, promise
+// never settles). The timeout makes it reject, which releases the
+// `appending` flag so the watchdog can retry — otherwise the whole
+// buffering pipeline deadlocks and playback stops at the buffer's edge.
+const FETCH_TIMEOUT_MS = 20_000;
+const AHEAD_SEC = 300;       // keep ~5 min appended beyond the playhead
+const PREFETCH_COUNT = 2;    // episodes kept as bytes in RAM, ready to append
+
+// Trim a slice to whole MP3 frames. Episode slices can start/end mid-frame;
+// in sequence mode the demuxer stitches one file's partial tail against the
+// next file's head into a garbage packet. Playing through it usually works,
+// but when the decoder is STARVED at that exact timestamp (playhead stalled
+// at the buffer edge — the locked-phone case) it decodes the garbage
+// immediately and kills the pipeline: PIPELINE_ERROR_DECODE, media error 3,
+// stream dead. Appending only whole frames makes that packet impossible.
+function trimToFrames(ab) {
+  const b = new Uint8Array(ab);
+  const start = findMp3Sync(b, 0);
+  if (start < 0) return ab;
+  let off = start, lastEnd = start;
+  while (off + 4 <= b.length) {
+    if (b[off] !== 0xFF || (b[off + 1] & 0xE0) !== 0xE0) { off++; continue; }
+    const b1 = b[off + 1], b2 = b[off + 2];
+    const ver = (b1 >> 3) & 3, layer = (b1 >> 1) & 3;
+    const brIdx = (b2 >> 4) & 0xF, srIdx = (b2 >> 2) & 3, pad = (b2 >> 1) & 1;
+    if (ver === 1 || layer !== 1 || srIdx === 3 || brIdx === 0 || brIdx === 15) { off++; continue; }
+    const BR = ver === 3
+      ? [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
+      : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    const SR = [[44100, 48000, 32000], [22050, 24000, 16000], [11025, 12000, 8000]][ver === 3 ? 0 : ver === 2 ? 1 : 2];
+    const size = Math.floor((ver === 3 ? 144 : 72) * BR[brIdx] * 1000 / SR[srIdx]) + pad;
+    if (size < 24) { off++; continue; }
+    if (off + size > b.length) break; // trailing partial frame — drop it
+    off += size; lastEnd = off;
+  }
+  return (start === 0 && lastEnd === b.length) ? ab : ab.slice(start, lastEnd);
+}
+
 async function epBytes(ep) {
   if (ep._bytes) return ep._bytes;
+  let ab;
   if (ep.src) {
-    const resp = await fetch(ep.src);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    ep._bytes = await resp.arrayBuffer();
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const resp = await fetch(ep.src, { signal: ctl.signal });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      ab = await resp.arrayBuffer();
+    } finally {
+      clearTimeout(timer);
+    }
   } else {
     const file = sourceFiles[ep.compilationId];
     if (!file) throw new Error('fichier source absent');
-    ep._bytes = await file.slice(ep.startByte, ep.endByte).arrayBuffer();
+    ab = await file.slice(ep.startByte, ep.endByte).arrayBuffer();
   }
+  ep._bytes = trimToFrames(ab);
   return ep._bytes;
 }
 
-// Download the following episode's bytes ahead of time — appending later must
-// not depend on the network (locked phones may suspend it).
-function prefetchNext(ep) {
-  const nxt = nextEpOf(ep);
-  if (nxt && nxt.id !== ep?.id) epBytes(nxt).catch(() => {});
+// Keep the next PREFETCH_COUNT episodes' bytes in RAM so appending never
+// depends on the network at the moment it's needed (locked phones may
+// suspend it). RAM survives locking; the network doesn't.
+let prefetching = false;
+async function refillPrefetch() {
+  if (prefetching || !segments.length) return;
+  prefetching = true;
+  try {
+    let ep = segments[segments.length - 1].ep;
+    for (let i = 0; i < PREFETCH_COUNT; i++) {
+      ep = nextEpOf(ep);
+      if (!ep || segments.some(s => s.ep.id === ep.id)) break;
+      if (!ep._bytes) await epBytes(ep);
+    }
+  } catch (e) {
+    // network gone — the watchdog will call us again
+  } finally {
+    prefetching = false;
+  }
 }
 
 async function appendEpisode(ep) {
@@ -439,23 +499,62 @@ async function appendEpisode(ep) {
   appending = true;
   try {
     const bytes = await epBytes(ep);
-    if (!sb || ms?.readyState !== 'open') return;
+    if (!sb || ms?.readyState !== 'open' || sb.updating) return;
     const startAt = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : 0;
+    if (!bytes.byteLength) {
+      // Empty/corrupt file (it happened: ep07.mp3 shipped as 0 bytes) — record
+      // a zero-length segment so the chain steps over it instead of stalling.
+      segments.push({ ep, start: startAt, end: startAt });
+      return;
+    }
     await new Promise((ok, no) => {
-      sb.addEventListener('updateend', ok, { once: true });
-      sb.addEventListener('error', () => no(new Error('append error')), { once: true });
+      const onErr = () => no(new Error('append error'));
+      sb.addEventListener('updateend', () => { sb.removeEventListener('error', onErr); ok(); }, { once: true });
+      sb.addEventListener('error', onErr, { once: true });
       sb.appendBuffer(bytes);
     });
     const end = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : startAt;
     segments.push({ ep, start: startAt, end });
     delete ep._bytes; // free the download once it lives in the SourceBuffer
-    prefetchNext(ep);
   } catch (e) {
+    // Out of SourceBuffer quota: free played audio now so the retry can fit.
+    if (e.name === 'QuotaExceededError') trimBehind(30);
     console.warn('append:', e.message);
   } finally {
     appending = false;
   }
+  refillPrefetch();
 }
+
+function trimBehind(keepSec) {
+  if (!sb || sb.updating || !sb.buffered.length) return;
+  const start = sb.buffered.start(0);
+  const upTo = audio.currentTime - keepSec;
+  if (upTo <= start) return;
+  try {
+    sb.remove(start, upTo);
+    segments = segments.filter(s => s.end > upTo);
+  } catch (e) {}
+}
+
+// The one entry point that keeps the stream fed: append episodes until
+// AHEAD_SEC of audio sits beyond the playhead, and keep the RAM prefetch
+// full. Called from timeupdate, from 'waiting', and from the watchdog.
+function ensureBuffered() {
+  if (!MSE_OK || !sb || !autoPlay || !segments.length) return;
+  const end = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : 0;
+  if (end - audio.currentTime < AHEAD_SEC) {
+    const nxt = nextEpOf(segments[segments.length - 1].ep);
+    if (nxt && !segments.some(s => s.ep.id === nxt.id)) appendEpisode(nxt);
+  }
+  refillPrefetch();
+}
+
+// Watchdog: timeupdate stops firing the moment playback stalls, and a single
+// 'waiting' event is not enough if the retry it triggers also fails. This
+// interval keeps retrying — background throttling slows it to ~1/min on a
+// locked phone, which is still enough to recover.
+setInterval(() => { if (playing && currentEp) ensureBuffered(); }, 5000);
 
 function teardownStream() {
   if (ms && ms.readyState === 'open') { try { ms.endOfStream(); } catch (e) {} }
@@ -477,6 +576,7 @@ function playEp(ep) {
       sb.mode = 'sequence';
       appendEpisode(ep).then(() => {
         if (skipIntro && segments.length) audio.currentTime = segments[0].start + SKIP_INTRO_SEC;
+        ensureBuffered(); // start stacking the following episodes right away
       });
     }, { once: true });
   } else {
@@ -529,34 +629,36 @@ audio.ontimeupdate = () => {
     render();
   }
 
-  // Playing the last buffered episode → append the following one now (its
-  // bytes were prefetched, so this needs no network).
+  // Auto off: stop at the end of the current episode.
   const last = segments[segments.length - 1];
-  if (seg && seg.ep.id === last.ep.id) {
-    if (autoPlay) {
-      const nxt = nextEpOf(last.ep);
-      if (nxt && nxt.id !== last.ep.id) appendEpisode(nxt);
-    } else if (audio.currentTime >= seg.end - 0.1) {
-      stopPlay(); // Auto off: stop at the end of the episode
-    }
+  if (!autoPlay && seg && seg.ep.id === last.ep.id && audio.currentTime >= seg.end - 0.1) {
+    stopPlay();
+    return;
   }
+
+  // Keep AHEAD_SEC of audio appended beyond the playhead and the RAM
+  // prefetch full — this is what survives a locked screen.
+  ensureBuffered();
 
   // Trim played audio so a whole night stays flat in memory; drop segment
   // records that are entirely behind the trim point.
-  if (sb && !sb.updating && sb.buffered.length) {
-    const start = sb.buffered.start(0);
-    if (audio.currentTime - start > 180) {
-      const upTo = audio.currentTime - 60;
-      try { sb.remove(start, upTo); segments = segments.filter(s => s.end > upTo); } catch (e) {}
-    }
+  if (sb && !sb.updating && sb.buffered.length &&
+      audio.currentTime - sb.buffered.start(0) > 600) {
+    trimBehind(120);
   }
 };
 // If we ever stall at the buffer's edge (append missed its window), retry —
 // the moment data lands, playback resumes on its own.
-audio.onwaiting = () => {
-  if (!MSE_OK || !autoPlay || !segments.length) return;
-  const nxt = nextEpOf(segments[segments.length - 1].ep);
-  if (nxt) appendEpisode(nxt);
+audio.onwaiting = ensureBuffered;
+audio.onstalled = ensureBuffered;
+// A decode error kills the whole MediaSource pipeline (readyState 'ended',
+// no more appends possible). Rebuild the stream from the current episode —
+// best effort: with the screen locked the play() may be blocked, but with
+// whole-frame appends this path should not trigger at all.
+audio.onerror = () => {
+  if (!MSE_OK || !currentEp || !ms) return;
+  console.warn('media error', audio.error?.code, '— rebuilding stream');
+  playEp(currentEp);
 };
 
 function segElapsed() {
@@ -634,7 +736,7 @@ function shuffleEpisodes() {
   }
   render();
   if (!playing) playNext();
-  else prefetchNext(currentEp); // order changed — predownload the new next
+  else refillPrefetch(); // order changed — predownload the new next episodes
 }
 
 // Sleep timer: when armed, playback pauses once the deadline passes.
@@ -850,9 +952,10 @@ async function loadHostedEpisodes() {
     episodes.push({
       id: cid + '_' + e.file, compilationId: cid, compilationName: idx.compilation,
       index: i, startSec: 0, endSec: e.duration, duration: e.duration,
-      // ?v= busts browser caches of stale audio (e.g. the old ep01.mp3 whose
-      // Xing frame declared the full 3 h duration and never fired 'ended')
-      label: e.label, src: 'episodes/' + e.file + '?v=3', file: e.file,
+      // ?v= busts browser caches of stale audio (v=4: ep07.mp3 was truncated
+      // to 0 bytes by the v14 retag — an appended empty episode stalled the
+      // stream at its buffer edge, "stops after 2-3 episodes" on locked phones)
+      label: e.label, src: 'episodes/' + e.file + '?v=4', file: e.file,
     });
   });
   hostedChecked = true;
