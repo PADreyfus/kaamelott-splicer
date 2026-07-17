@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v16';   // bump on every deploy (also update index.html ?v=)
+const APP_VERSION = 'v17';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -1027,6 +1027,35 @@ async function serverDeleteEpisode(file, label) {
   }
   return true;
 }
+
+// ===================== PWA INSTALL =====================
+// The service worker + manifest make the site installable on Android. The
+// installed app is the same page in a standalone window; playback while the
+// phone is locked is unchanged (that's handled by the MediaSource stream).
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+// Chrome fires beforeinstallprompt only while the app is NOT installed and
+// installability criteria are met — so the button shows exactly when an
+// install is possible, and never inside the installed app itself.
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  installPrompt = e;
+  $('bInstall').style.display = '';
+});
+$('bInstall').onclick = async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
+  $('bInstall').style.display = 'none';
+};
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  $('bInstall').style.display = 'none';
+});
 
 $('appVersion').textContent = APP_VERSION;
 
