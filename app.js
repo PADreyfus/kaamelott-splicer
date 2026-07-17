@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v17';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v18';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -1036,21 +1036,31 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
-// Chrome fires beforeinstallprompt only while the app is NOT installed and
-// installability criteria are met — so the button shows exactly when an
-// install is possible, and never inside the installed app itself.
+// Don't gate the button on beforeinstallprompt: Samsung Internet never
+// fires it, and Chrome suppresses it after a dismissed prompt. Show the
+// button whenever we're NOT already running as the installed app; a click
+// uses the captured native prompt when there is one, otherwise it explains
+// the manual menu path.
+const isStandalone = matchMedia('(display-mode: standalone)').matches
+  || navigator.standalone === true;
 let installPrompt = null;
+if (!isStandalone) $('bInstall').style.display = '';
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   installPrompt = e;
-  $('bInstall').style.display = '';
 });
 $('bInstall').onclick = async () => {
-  if (!installPrompt) return;
-  installPrompt.prompt();
-  await installPrompt.userChoice.catch(() => {});
-  installPrompt = null;
-  $('bInstall').style.display = 'none';
+  if (installPrompt) {
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => {});
+    installPrompt = null;
+  } else {
+    alert(
+      "Pour installer l'application :\n\n" +
+      "Chrome : menu ⋮ → « Ajouter à l'écran d'accueil » → « Installer »\n\n" +
+      "Samsung Internet : menu ☰ → « Ajouter la page à » → « Écran d'accueil »"
+    );
+  }
 };
 window.addEventListener('appinstalled', () => {
   installPrompt = null;
