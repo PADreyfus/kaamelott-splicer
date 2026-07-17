@@ -6,12 +6,12 @@
  * fetch timeouts tuned for locked phones — the worker must stay out of that
  * path. Bump CACHE (and the ?v= entries) on every deploy, same as APP_VERSION.
  */
-const CACHE = 'dodo-v18';
+const CACHE = 'dodo-v19';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=18',
-  './style.css?v=18',
+  './app.js?v=19',
+  './style.css?v=19',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
@@ -26,7 +26,12 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      // Only reap our own outdated shell caches (dodo-vN). The page's
+      // 'dodo-episodes' cache holds the downloaded episodes and must
+      // survive every app update.
+      .then(keys => Promise.all(
+        keys.filter(k => k.startsWith('dodo-v') && k !== CACHE).map(k => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });

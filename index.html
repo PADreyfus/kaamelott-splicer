@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=18">
+  <link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
   <header>
@@ -58,12 +58,15 @@
       </div>
 
       <div class="card">
-        <h2 id="epCount"></h2>
+        <div class="list-head">
+          <h2 id="epCount"></h2>
+          <button id="bDownload" class="btn small toggle" style="display:none" title="Garder tous les épisodes sur l'appareil">⬇ Télécharger tout</button>
+        </div>
         <div id="epList"></div>
       </div>
     </section>
   </main>
 
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=19"></script>
 </body>
 </html>

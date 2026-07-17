@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v18';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v19';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -451,18 +451,34 @@ function trimToFrames(ab) {
   return (start === 0 && lastEnd === b.length) ? ab : ab.slice(start, lastEnd);
 }
 
+// Local copies of hosted episodes (Cache Storage). Survives restarts and
+// works with the network fully off — the "Télécharger tout" button fills it,
+// and any episode fetched for playback is kept opportunistically.
+const EP_CACHE = 'dodo-episodes';
+async function epCache() {
+  try { return await caches.open(EP_CACHE); } catch (e) { return null; }
+}
+
 async function epBytes(ep) {
   if (ep._bytes) return ep._bytes;
   let ab;
   if (ep.src) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-    try {
-      const resp = await fetch(ep.src, { signal: ctl.signal });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      ab = await resp.arrayBuffer();
-    } finally {
-      clearTimeout(timer);
+    // Downloaded copy first: instant, and immune to a suspended network.
+    const c = await epCache();
+    const hit = c && await c.match(ep.src);
+    if (hit) {
+      ab = await hit.arrayBuffer();
+    } else {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+      try {
+        const resp = await fetch(ep.src, { signal: ctl.signal });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        if (c) c.put(ep.src, resp.clone()).then(updateDlButton).catch(() => {});
+        ab = await resp.arrayBuffer();
+      } finally {
+        clearTimeout(timer);
+      }
     }
   } else {
     const file = sourceFiles[ep.compilationId];
@@ -782,6 +798,8 @@ function deleteEp(id) {
   if (ep.url) URL.revokeObjectURL(ep.url);
   episodes = episodes.filter(e => e.id !== id);
   if (ep.file) {
+    // Drop the downloaded copy too, and refresh the download counter.
+    epCache().then(c => c && c.delete(ep.src)).then(updateDlButton).catch(() => {});
     // Remember locally right away (works even without a token / while the
     // Pages redeploy is pending), then delete on the server.
     let deleted = [];
@@ -931,6 +949,68 @@ setInterval(() => {
   if (Date.now() >= sleepUntil && !playing) { sleepUntil = null; render(); }
 }, 1000);
 
+// ===================== DOWNLOAD ALL (OFFLINE) =====================
+// Store every hosted episode in the local cache so a whole night of playback
+// never needs the network. Also asks for persistent storage so Android does
+// not evict the copies under disk pressure.
+let dlBusy = false;
+
+async function downloadAll() {
+  const c = await epCache();
+  const hosted = episodes.filter(e => e.src);
+  if (dlBusy || !c || !hosted.length) return;
+  dlBusy = true;
+  const btn = $('bDownload');
+  try {
+    navigator.storage?.persist?.().catch(() => {});
+    let done = 0, failed = 0;
+    for (const ep of hosted) {
+      btn.textContent = `⬇ ${done}/${hosted.length}…`;
+      if (!(await c.match(ep.src))) {
+        try {
+          const resp = await fetch(ep.src);
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          await c.put(ep.src, resp);
+        } catch (e) {
+          failed++;
+        }
+      }
+      done++;
+    }
+    // Drop entries that no longer match the episode list (deleted episodes,
+    // superseded audio ?v=) so the cache never grows past one full set.
+    const valid = new Set(hosted.map(ep => new URL(ep.src, location.href).href));
+    valid.add(new URL('episodes/index.json', location.href).href);
+    for (const req of await c.keys()) {
+      if (!valid.has(req.url)) c.delete(req);
+    }
+    if (failed) alert(failed + " épisode(s) n'ont pas pu être téléchargés — réessaie.");
+  } finally {
+    dlBusy = false;
+  }
+  updateDlButton();
+}
+
+async function updateDlButton() {
+  if (dlBusy) return; // downloadAll owns the label while running
+  const btn = $('bDownload');
+  const hosted = episodes.filter(e => e.src);
+  const c = await epCache();
+  if (!c || !hosted.length) { btn.style.display = 'none'; return; }
+  let cached = 0;
+  for (const ep of hosted) if (await c.match(ep.src)) cached++;
+  btn.style.display = '';
+  if (cached >= hosted.length) {
+    btn.textContent = `✓ ${cached} épisodes sur l'appareil`;
+    btn.classList.add('on');
+  } else {
+    btn.textContent = `⬇ Télécharger tout (${cached}/${hosted.length})`;
+    btn.classList.remove('on');
+  }
+}
+
+$('bDownload').onclick = downloadAll;
+
 // ===================== HOSTED EPISODES =====================
 // If the site ships pre-cut episodes (episodes/index.json), load them so the
 // player is ready immediately — no file upload or analysis needed.
@@ -938,10 +1018,17 @@ async function loadHostedEpisodes() {
   let idx;
   try {
     const resp = await fetch('episodes/index.json', { cache: 'no-cache' });
-    if (!resp.ok) { hostedChecked = true; render(); return; }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const copy = resp.clone();
     idx = await resp.json();
+    // keep a local copy so the app still starts with the network off
+    epCache().then(c => c && c.put('episodes/index.json', copy)).catch(() => {});
   } catch (e) {
-    hostedChecked = true; render(); return; // no hosted episodes — upload mode
+    // Offline (or no hosted episodes): fall back to the downloaded copy.
+    const c = await epCache();
+    const hit = c && await c.match('episodes/index.json');
+    if (!hit) { hostedChecked = true; render(); return; } // upload mode
+    idx = await hit.json();
   }
   let deleted = [];
   try { deleted = JSON.parse(localStorage.getItem('deletedEps')) || []; } catch (e) {}
@@ -960,6 +1047,7 @@ async function loadHostedEpisodes() {
   });
   hostedChecked = true;
   render();
+  updateDlButton();
 }
 
 // ===================== SERVER-SIDE DELETE =====================
