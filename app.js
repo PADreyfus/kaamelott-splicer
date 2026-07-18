@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v20';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v21';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -1064,18 +1064,25 @@ async function downloadAll() {
   if (dlBusy || !c || !hosted.length) return;
   dlBusy = true;
   const btn = $('bDownload');
+  let failed = 0;
   try {
     navigator.storage?.persist?.().catch(() => {});
-    let done = 0, failed = 0;
+    let done = 0;
     for (const ep of hosted) {
       btn.textContent = `⬇ ${done}/${hosted.length}…`;
       if (!(await c.match(ep.src))) {
+        // Timeout like epBytes: a fetch suspended by a locked phone would
+        // otherwise hang forever and leave dlBusy stuck at true.
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
         try {
-          const resp = await fetch(ep.src);
+          const resp = await fetch(ep.src, { signal: ctl.signal });
           if (!resp.ok) throw new Error('HTTP ' + resp.status);
           await c.put(ep.src, resp);
         } catch (e) {
           failed++;
+        } finally {
+          clearTimeout(timer);
         }
       }
       done++;
@@ -1087,11 +1094,18 @@ async function downloadAll() {
     for (const req of await c.keys()) {
       if (!valid.has(req.url)) c.delete(req);
     }
-    if (failed) alert(failed + " épisode(s) n'ont pas pu être téléchargés — réessaie.");
   } finally {
     dlBusy = false;
   }
-  updateDlButton();
+  // No alert here: a modal blocks the whole JS thread, and if the failures
+  // came from locking the phone mid-download it would fire with the screen
+  // off — starving the playback pipeline. The button label carries the news.
+  if (failed) {
+    btn.textContent = `⬇ Réessayer (${failed} manquant${failed > 1 ? 's' : ''})`;
+    btn.classList.remove('on');
+  } else {
+    updateDlButton();
+  }
 }
 
 async function updateDlButton() {
