@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v19';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v20';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -341,7 +341,15 @@ let currentEp = null;
 let playing = false;
 let autoPlay = true;
 let skipIntro = localStorage.getItem('skipIntro') === '1';
-let sleepUntil = null; // epoch ms; playback pauses once passed
+// Sleep timer: the button cycles off → 15/30/45/60 min → fin d'épisode.
+// Minute modes fade the volume out over the last SLEEP_FADE_SEC and pause at
+// the deadline; 'ep' mode plays to the end of the current episode, fading its
+// last EP_FADE_SEC, so the stop never cuts mid-dialogue at full volume.
+const SLEEP_STEPS = [15, 30, 45, 60, 'ep'];
+const SLEEP_FADE_SEC = 90;
+const EP_FADE_SEC = 15;
+let sleepMode = null;  // null | minutes | 'ep'
+let sleepUntil = null; // epoch ms; only set in minute modes
 
 // ONE audio element for everything. With the screen locked, Android only lets
 // a page CONTINUE its existing playback session — play() on a second/swapped
@@ -577,9 +585,47 @@ function teardownStream() {
   ms = null; sb = null; segments = [];
 }
 
-function playEp(ep) {
+// ===================== RESUME / PLAY HISTORY =====================
+// Position saved every few seconds during playback → "Reprendre" next launch.
+let lastResumeSave = 0;
+function saveResume() {
+  if (!currentEp) return;
+  const off = segElapsed();
+  if (isFinite(off) && off >= 5) {
+    localStorage.setItem('resume', JSON.stringify({ id: currentEp.id, off: Math.floor(off) }));
+  }
+}
+
+// id → when playback last entered that episode; the shuffle sends episodes
+// heard in the last few nights to the back of the order.
+function lastPlayedMap() {
+  try { return JSON.parse(localStorage.getItem('lastPlayed')) || {}; } catch (e) { return {}; }
+}
+function markPlayed(id) {
+  const m = lastPlayedMap();
+  m[id] = Date.now();
+  // prune long-gone entries (e.g. ids of one-off local compilations)
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  for (const k of Object.keys(m)) if (m[k] < cutoff) delete m[k];
+  localStorage.setItem('lastPlayed', JSON.stringify(m));
+}
+
+function offerResume() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('resume')); } catch (e) {}
+  const ep = saved && episodes.find(e => e.id === saved.id);
+  if (!ep || saved.off < 10 || saved.off > ep.duration - 20) return;
+  $('bResume').textContent = `▶ Reprendre ${ep.label} à ${fmt(saved.off)}`;
+  $('resumeCard').style.display = '';
+  $('bResume').onclick = () => playEp(ep, saved.off);
+}
+
+function playEp(ep, startOffset) {
   if (progressRAF) { cancelAnimationFrame(progressRAF); progressRAF = null; }
+  $('resumeCard').style.display = 'none'; // any start supersedes the offer
   currentEp = ep;
+  markPlayed(ep.id);
+  const off = startOffset ?? (skipIntro ? SKIP_INTRO_SEC : 0);
   if (MSE_OK) {
     teardownStream();
     ms = new MediaSource();
@@ -591,7 +637,7 @@ function playEp(ep) {
       // appends one after another instead of overlapping them.
       sb.mode = 'sequence';
       appendEpisode(ep).then(() => {
-        if (skipIntro && segments.length) audio.currentTime = segments[0].start + SKIP_INTRO_SEC;
+        if (off > 0 && segments.length) audio.currentTime = segments[0].start + off;
         ensureBuffered(); // start stacking the following episodes right away
       });
     }, { once: true });
@@ -599,8 +645,8 @@ function playEp(ep) {
     const url = episodeURL(ep); // legacy fallback (no MediaSource, e.g. old iOS)
     if (!url) return;
     audio.src = url;
-    if (skipIntro) {
-      audio.addEventListener('loadedmetadata', () => { audio.currentTime = SKIP_INTRO_SEC; }, { once: true });
+    if (off > 0) {
+      audio.addEventListener('loadedmetadata', () => { audio.currentTime = off; }, { once: true });
     }
   }
   audio.play().then(() => {
@@ -622,7 +668,12 @@ audio.onpause = () => { if (!audio.ended) { playing = false; render(); } };
 // Legacy fallback only: chain on 'ended' (MSE never ends its stream).
 audio.onended = () => {
   if (MSE_OK) { stopPlay(); return; }
-  if (!autoPlay || sleepExpired()) { stopPlay(); return; }
+  if (sleepMode === 'ep') { sleepStop(); return; }
+  if (!autoPlay || (typeof sleepMode === 'number' && Date.now() >= sleepUntil)) {
+    sleepMode = null; sleepUntil = null; audio.volume = 1;
+    stopPlay();
+    return;
+  }
   playNext();
 };
 
@@ -631,13 +682,15 @@ audio.onended = () => {
 // episode-boundary bookkeeping, buffering ahead, sleep timer, memory trim.
 audio.ontimeupdate = () => {
   if (!currentEp) return;
-  if (playing && sleepExpired()) { togglePause(); return; }
+  if (playing && sleepTick()) return;
+  if (playing && Date.now() - lastResumeSave > 5000) { lastResumeSave = Date.now(); saveResume(); }
   if (!MSE_OK || !segments.length) return;
 
   // Crossed into the next segment? Update state — playback itself just glides.
   const seg = currentSegment();
   if (seg && seg.ep.id !== currentEp.id) {
     currentEp = seg.ep;
+    markPlayed(seg.ep.id);
     if (skipIntro && audio.currentTime < seg.start + SKIP_INTRO_SEC - 0.3) {
       audio.currentTime = seg.start + SKIP_INTRO_SEC;
     }
@@ -750,28 +803,76 @@ function shuffleEpisodes() {
     const j = Math.floor(Math.random() * (i + 1));
     [episodes[i], episodes[j]] = [episodes[j], episodes[i]];
   }
+  // Episodes heard in the last few nights go to the back of the order (stable
+  // partition, so the shuffle stays random within each group) — a night of
+  // listening won't replay what yesterday's night already covered.
+  const RECENT_MS = 72 * 3600 * 1000;
+  const m = lastPlayedMap();
+  const now = Date.now();
+  const fresh = [], recent = [];
+  for (const ep of episodes) (now - (m[ep.id] || 0) < RECENT_MS ? recent : fresh).push(ep);
+  episodes = fresh.concat(recent);
   render();
   if (!playing) playNext();
   else refillPrefetch(); // order changed — predownload the new next episodes
 }
 
-// Sleep timer: when armed, playback pauses once the deadline passes.
-function sleepExpired() {
-  if (sleepUntil === null || Date.now() < sleepUntil) return false;
+// Drives the armed sleep timer: fades the volume as the stop approaches and
+// pauses when it arrives. Returns true when it paused playback. Called from
+// timeupdate (works locked) and the 1 s interval. audio.volume is ignored on
+// iOS — there the fade simply doesn't happen, the pause still does.
+function sleepTick() {
+  if (sleepMode === null) return false;
+  let remaining, fade;
+  if (typeof sleepMode === 'number') {
+    remaining = (sleepUntil - Date.now()) / 1000;
+    fade = SLEEP_FADE_SEC;
+  } else {
+    // 'ep': stop at the end of the current episode. If the stream already
+    // glided into the next episode between two timeupdates, stop now —
+    // the fade had the volume near zero at the boundary anyway.
+    const seg = MSE_OK ? currentSegment() : null;
+    if (seg && currentEp && seg.ep.id !== currentEp.id) { sleepStop(); return true; }
+    const end = seg ? seg.end : audio.duration;
+    if (!isFinite(end) || end <= 0) return false;
+    remaining = end - audio.currentTime;
+    fade = EP_FADE_SEC;
+  }
+  if (remaining <= 0.15) { sleepStop(); return true; }
+  audio.volume = Math.min(1, Math.max(0.02, remaining / fade));
+  return false;
+}
+
+function sleepStop() {
+  sleepMode = null;
   sleepUntil = null;
+  if (playing) togglePause();
+  audio.volume = 1; // after the pause, so the fade never pops back up audibly
   render();
-  return true;
 }
 
 function toggleSleep() {
-  sleepUntil = sleepUntil === null ? Date.now() + 30 * 60_000 : null;
+  const i = SLEEP_STEPS.indexOf(sleepMode); // -1 when off
+  sleepMode = i === SLEEP_STEPS.length - 1 ? null : SLEEP_STEPS[i + 1];
+  sleepUntil = typeof sleepMode === 'number' ? Date.now() + sleepMode * 60_000 : null;
+  audio.volume = 1; // changing modes mid-fade restarts from full volume
   render();
+}
+
+function sleepLabel() {
+  if (sleepMode === 'ep') return "⏾ Fin d'épisode";
+  if (typeof sleepMode === 'number') return '⏾ ' + fmt(Math.max(0, (sleepUntil - Date.now()) / 1000));
+  return '⏾ Minuterie';
 }
 
 function updateMediaSession() {
   if (!('mediaSession' in navigator) || !currentEp) return;
   navigator.mediaSession.metadata = new MediaMetadata({
     title: currentEp.label, artist: 'Kaamelott', album: currentEp.compilationName,
+    artwork: [
+      { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
+      { src: 'icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
   });
   navigator.mediaSession.setActionHandler('play', togglePause);
   navigator.mediaSession.setActionHandler('pause', togglePause);
@@ -782,6 +883,7 @@ function togglePause() {
   if (!currentEp) { playNext(); return; }
   if (playing) {
     audio.pause();
+    saveResume(); // capture the exact stop position for "Reprendre"
     if (progressRAF) { cancelAnimationFrame(progressRAF); progressRAF = null; }
     playing = false;
   } else {
@@ -878,10 +980,8 @@ function render() {
   $('bPlay').textContent = playing ? '⏸' : '▶';
   $('bAuto').classList.toggle('on', autoPlay);
   $('bSkipIntro').classList.toggle('on', skipIntro);
-  $('bSleep').classList.toggle('on', sleepUntil !== null);
-  $('bSleep').textContent = sleepUntil !== null
-    ? '⏾ ' + fmt(Math.max(0, (sleepUntil - Date.now()) / 1000))
-    : '⏾ 30 min';
+  $('bSleep').classList.toggle('on', sleepMode !== null);
+  $('bSleep').textContent = sleepLabel();
 
   // Episode list
   $('epCount').textContent = episodes.length + ' épisode' + (episodes.length > 1 ? 's' : '');
@@ -939,14 +1039,17 @@ $('bSkipIntro').onclick = () => {
   render();
 };
 $('bSleep').onclick = toggleSleep;
-// Live countdown on the sleep button while armed (also fires the pause when
-// the deadline passes with playback stopped or the tab in the background).
+// Live countdown on the sleep button while armed (also drives the fade/pause
+// when timeupdate is throttled or playback is already stopped).
 setInterval(() => {
-  if (sleepUntil === null) return;
-  if (Date.now() >= sleepUntil && playing) { togglePause(); }
-  const b = $('bSleep');
-  b.textContent = '⏾ ' + fmt(Math.max(0, (sleepUntil - Date.now()) / 1000));
-  if (Date.now() >= sleepUntil && !playing) { sleepUntil = null; render(); }
+  if (sleepMode === null) return;
+  if (playing) {
+    sleepTick();
+  } else if (typeof sleepMode === 'number' && Date.now() >= sleepUntil) {
+    sleepMode = null; sleepUntil = null; audio.volume = 1;
+    render();
+  }
+  $('bSleep').textContent = sleepLabel();
 }, 1000);
 
 // ===================== DOWNLOAD ALL (OFFLINE) =====================
@@ -1048,6 +1151,7 @@ async function loadHostedEpisodes() {
   hostedChecked = true;
   render();
   updateDlButton();
+  offerResume();
 }
 
 // ===================== SERVER-SIDE DELETE =====================
