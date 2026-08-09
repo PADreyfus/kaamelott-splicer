@@ -1,255 +1,514 @@
 {
- "compilation": "Kaamelott Livre I - Tome 1 [b05Scfhi0dU]",
- "episodes": [
+ "compilations": [
   {
-   "file": "ep01.mp3",
-   "label": "Épisode 1",
-   "duration": 198.6
+   "name": "Kaamelott Livre I - Tome 1 [b05Scfhi0dU]",
+   "episodes": [
+    {
+     "file": "ep01.mp3",
+     "label": "Épisode 1",
+     "duration": 198.6
+    },
+    {
+     "file": "ep02.mp3",
+     "label": "Épisode 2",
+     "duration": 175.7
+    },
+    {
+     "file": "ep03.mp3",
+     "label": "Épisode 3",
+     "duration": 248.2
+    },
+    {
+     "file": "ep04.mp3",
+     "label": "Épisode 4",
+     "duration": 184.3
+    },
+    {
+     "file": "ep05.mp3",
+     "label": "Épisode 5",
+     "duration": 216.2
+    },
+    {
+     "file": "ep06.mp3",
+     "label": "Épisode 6",
+     "duration": 205.6
+    },
+    {
+     "file": "ep07.mp3",
+     "label": "Épisode 7",
+     "duration": 233.5
+    },
+    {
+     "file": "ep08.mp3",
+     "label": "Épisode 8",
+     "duration": 226.9
+    },
+    {
+     "file": "ep09.mp3",
+     "label": "Épisode 9",
+     "duration": 233.1
+    },
+    {
+     "file": "ep10.mp3",
+     "label": "Épisode 10",
+     "duration": 188.1
+    },
+    {
+     "file": "ep11.mp3",
+     "label": "Épisode 11",
+     "duration": 172
+    },
+    {
+     "file": "ep12.mp3",
+     "label": "Épisode 12",
+     "duration": 201.6
+    },
+    {
+     "file": "ep13.mp3",
+     "label": "Épisode 13",
+     "duration": 186.5
+    },
+    {
+     "file": "ep14.mp3",
+     "label": "Épisode 14",
+     "duration": 247.9
+    },
+    {
+     "file": "ep15.mp3",
+     "label": "Épisode 15",
+     "duration": 232.6
+    },
+    {
+     "file": "ep16.mp3",
+     "label": "Épisode 16",
+     "duration": 188.4
+    },
+    {
+     "file": "ep17.mp3",
+     "label": "Épisode 17",
+     "duration": 185.3
+    },
+    {
+     "file": "ep18.mp3",
+     "label": "Épisode 18",
+     "duration": 226.8
+    },
+    {
+     "file": "ep19.mp3",
+     "label": "Épisode 19",
+     "duration": 206.1
+    },
+    {
+     "file": "ep20.mp3",
+     "label": "Épisode 20",
+     "duration": 207.9
+    },
+    {
+     "file": "ep21.mp3",
+     "label": "Épisode 21",
+     "duration": 247.7
+    },
+    {
+     "file": "ep22.mp3",
+     "label": "Épisode 22",
+     "duration": 192.5
+    },
+    {
+     "file": "ep23.mp3",
+     "label": "Épisode 23",
+     "duration": 199.5
+    },
+    {
+     "file": "ep24.mp3",
+     "label": "Épisode 24",
+     "duration": 222.5
+    },
+    {
+     "file": "ep25.mp3",
+     "label": "Épisode 25",
+     "duration": 188.3
+    },
+    {
+     "file": "ep26.mp3",
+     "label": "Épisode 26",
+     "duration": 215
+    },
+    {
+     "file": "ep27.mp3",
+     "label": "Épisode 27",
+     "duration": 209.9
+    },
+    {
+     "file": "ep28.mp3",
+     "label": "Épisode 28",
+     "duration": 207.9
+    },
+    {
+     "file": "ep29.mp3",
+     "label": "Épisode 29",
+     "duration": 187.8
+    },
+    {
+     "file": "ep30.mp3",
+     "label": "Épisode 30",
+     "duration": 220.4
+    },
+    {
+     "file": "ep31.mp3",
+     "label": "Épisode 31",
+     "duration": 196.6
+    },
+    {
+     "file": "ep32.mp3",
+     "label": "Épisode 32",
+     "duration": 214.2
+    },
+    {
+     "file": "ep33.mp3",
+     "label": "Épisode 33",
+     "duration": 242.1
+    },
+    {
+     "file": "ep34.mp3",
+     "label": "Épisode 34",
+     "duration": 237.6
+    },
+    {
+     "file": "ep35.mp3",
+     "label": "Épisode 35",
+     "duration": 196.5
+    },
+    {
+     "file": "ep36.mp3",
+     "label": "Épisode 36",
+     "duration": 222.2
+    },
+    {
+     "file": "ep37.mp3",
+     "label": "Épisode 37",
+     "duration": 235.1
+    },
+    {
+     "file": "ep38.mp3",
+     "label": "Épisode 38",
+     "duration": 189.7
+    },
+    {
+     "file": "ep39.mp3",
+     "label": "Épisode 39",
+     "duration": 181.5
+    },
+    {
+     "file": "ep40.mp3",
+     "label": "Épisode 40",
+     "duration": 194.1
+    },
+    {
+     "file": "ep41.mp3",
+     "label": "Épisode 41",
+     "duration": 219.7
+    },
+    {
+     "file": "ep42.mp3",
+     "label": "Épisode 42",
+     "duration": 167.5
+    },
+    {
+     "file": "ep43.mp3",
+     "label": "Épisode 43",
+     "duration": 232.9
+    },
+    {
+     "file": "ep44.mp3",
+     "label": "Épisode 44",
+     "duration": 216.8
+    },
+    {
+     "file": "ep45.mp3",
+     "label": "Épisode 45",
+     "duration": 223.7
+    },
+    {
+     "file": "ep46.mp3",
+     "label": "Épisode 46",
+     "duration": 230.1
+    },
+    {
+     "file": "ep47.mp3",
+     "label": "Épisode 47",
+     "duration": 234.8
+    },
+    {
+     "file": "ep48.mp3",
+     "label": "Épisode 48",
+     "duration": 220.6
+    },
+    {
+     "file": "ep49.mp3",
+     "label": "Épisode 49",
+     "duration": 205.5
+    },
+    {
+     "file": "ep50.mp3",
+     "label": "Épisode 50",
+     "duration": 217.5
+    }
+   ]
   },
   {
-   "file": "ep02.mp3",
-   "label": "Épisode 2",
-   "duration": 175.7
-  },
-  {
-   "file": "ep03.mp3",
-   "label": "Épisode 3",
-   "duration": 248.2
-  },
-  {
-   "file": "ep04.mp3",
-   "label": "Épisode 4",
-   "duration": 184.3
-  },
-  {
-   "file": "ep05.mp3",
-   "label": "Épisode 5",
-   "duration": 216.2
-  },
-  {
-   "file": "ep06.mp3",
-   "label": "Épisode 6",
-   "duration": 205.6
-  },
-  {
-   "file": "ep07.mp3",
-   "label": "Épisode 7",
-   "duration": 233.5
-  },
-  {
-   "file": "ep08.mp3",
-   "label": "Épisode 8",
-   "duration": 226.9
-  },
-  {
-   "file": "ep09.mp3",
-   "label": "Épisode 9",
-   "duration": 233.1
-  },
-  {
-   "file": "ep10.mp3",
-   "label": "Épisode 10",
-   "duration": 188.1
-  },
-  {
-   "file": "ep11.mp3",
-   "label": "Épisode 11",
-   "duration": 172
-  },
-  {
-   "file": "ep12.mp3",
-   "label": "Épisode 12",
-   "duration": 201.6
-  },
-  {
-   "file": "ep13.mp3",
-   "label": "Épisode 13",
-   "duration": 186.5
-  },
-  {
-   "file": "ep14.mp3",
-   "label": "Épisode 14",
-   "duration": 247.9
-  },
-  {
-   "file": "ep15.mp3",
-   "label": "Épisode 15",
-   "duration": 232.6
-  },
-  {
-   "file": "ep16.mp3",
-   "label": "Épisode 16",
-   "duration": 188.4
-  },
-  {
-   "file": "ep17.mp3",
-   "label": "Épisode 17",
-   "duration": 185.3
-  },
-  {
-   "file": "ep18.mp3",
-   "label": "Épisode 18",
-   "duration": 226.8
-  },
-  {
-   "file": "ep19.mp3",
-   "label": "Épisode 19",
-   "duration": 206.1
-  },
-  {
-   "file": "ep20.mp3",
-   "label": "Épisode 20",
-   "duration": 207.9
-  },
-  {
-   "file": "ep21.mp3",
-   "label": "Épisode 21",
-   "duration": 247.7
-  },
-  {
-   "file": "ep22.mp3",
-   "label": "Épisode 22",
-   "duration": 192.5
-  },
-  {
-   "file": "ep23.mp3",
-   "label": "Épisode 23",
-   "duration": 199.5
-  },
-  {
-   "file": "ep24.mp3",
-   "label": "Épisode 24",
-   "duration": 222.5
-  },
-  {
-   "file": "ep25.mp3",
-   "label": "Épisode 25",
-   "duration": 188.3
-  },
-  {
-   "file": "ep26.mp3",
-   "label": "Épisode 26",
-   "duration": 215
-  },
-  {
-   "file": "ep27.mp3",
-   "label": "Épisode 27",
-   "duration": 209.9
-  },
-  {
-   "file": "ep28.mp3",
-   "label": "Épisode 28",
-   "duration": 207.9
-  },
-  {
-   "file": "ep29.mp3",
-   "label": "Épisode 29",
-   "duration": 187.8
-  },
-  {
-   "file": "ep30.mp3",
-   "label": "Épisode 30",
-   "duration": 220.4
-  },
-  {
-   "file": "ep31.mp3",
-   "label": "Épisode 31",
-   "duration": 196.6
-  },
-  {
-   "file": "ep32.mp3",
-   "label": "Épisode 32",
-   "duration": 214.2
-  },
-  {
-   "file": "ep33.mp3",
-   "label": "Épisode 33",
-   "duration": 242.1
-  },
-  {
-   "file": "ep34.mp3",
-   "label": "Épisode 34",
-   "duration": 237.6
-  },
-  {
-   "file": "ep35.mp3",
-   "label": "Épisode 35",
-   "duration": 196.5
-  },
-  {
-   "file": "ep36.mp3",
-   "label": "Épisode 36",
-   "duration": 222.2
-  },
-  {
-   "file": "ep37.mp3",
-   "label": "Épisode 37",
-   "duration": 235.1
-  },
-  {
-   "file": "ep38.mp3",
-   "label": "Épisode 38",
-   "duration": 189.7
-  },
-  {
-   "file": "ep39.mp3",
-   "label": "Épisode 39",
-   "duration": 181.5
-  },
-  {
-   "file": "ep40.mp3",
-   "label": "Épisode 40",
-   "duration": 194.1
-  },
-  {
-   "file": "ep41.mp3",
-   "label": "Épisode 41",
-   "duration": 219.7
-  },
-  {
-   "file": "ep42.mp3",
-   "label": "Épisode 42",
-   "duration": 167.5
-  },
-  {
-   "file": "ep43.mp3",
-   "label": "Épisode 43",
-   "duration": 232.9
-  },
-  {
-   "file": "ep44.mp3",
-   "label": "Épisode 44",
-   "duration": 216.8
-  },
-  {
-   "file": "ep45.mp3",
-   "label": "Épisode 45",
-   "duration": 223.7
-  },
-  {
-   "file": "ep46.mp3",
-   "label": "Épisode 46",
-   "duration": 230.1
-  },
-  {
-   "file": "ep47.mp3",
-   "label": "Épisode 47",
-   "duration": 234.8
-  },
-  {
-   "file": "ep48.mp3",
-   "label": "Épisode 48",
-   "duration": 220.6
-  },
-  {
-   "file": "ep49.mp3",
-   "label": "Épisode 49",
-   "duration": 205.5
-  },
-  {
-   "file": "ep50.mp3",
-   "label": "Épisode 50",
-   "duration": 217.5
+   "name": "Kaamelott Livre I - Tome 2",
+   "episodes": [
+    {
+     "file": "t2ep01.mp3",
+     "label": "Épisode 1",
+     "duration": 198.2
+    },
+    {
+     "file": "t2ep02.mp3",
+     "label": "Épisode 2",
+     "duration": 234.6
+    },
+    {
+     "file": "t2ep03.mp3",
+     "label": "Épisode 3",
+     "duration": 192
+    },
+    {
+     "file": "t2ep04.mp3",
+     "label": "Épisode 4",
+     "duration": 193.9
+    },
+    {
+     "file": "t2ep05.mp3",
+     "label": "Épisode 5",
+     "duration": 202.9
+    },
+    {
+     "file": "t2ep06.mp3",
+     "label": "Épisode 6",
+     "duration": 227
+    },
+    {
+     "file": "t2ep07.mp3",
+     "label": "Épisode 7",
+     "duration": 194
+    },
+    {
+     "file": "t2ep08.mp3",
+     "label": "Épisode 8",
+     "duration": 199.2
+    },
+    {
+     "file": "t2ep09.mp3",
+     "label": "Épisode 9",
+     "duration": 216.9
+    },
+    {
+     "file": "t2ep10.mp3",
+     "label": "Épisode 10",
+     "duration": 205
+    },
+    {
+     "file": "t2ep11.mp3",
+     "label": "Épisode 11",
+     "duration": 238.4
+    },
+    {
+     "file": "t2ep12.mp3",
+     "label": "Épisode 12",
+     "duration": 206
+    },
+    {
+     "file": "t2ep13.mp3",
+     "label": "Épisode 13",
+     "duration": 246.2
+    },
+    {
+     "file": "t2ep14.mp3",
+     "label": "Épisode 14",
+     "duration": 195
+    },
+    {
+     "file": "t2ep15.mp3",
+     "label": "Épisode 15",
+     "duration": 226.2
+    },
+    {
+     "file": "t2ep16.mp3",
+     "label": "Épisode 16",
+     "duration": 164.4
+    },
+    {
+     "file": "t2ep17.mp3",
+     "label": "Épisode 17",
+     "duration": 239.8
+    },
+    {
+     "file": "t2ep18.mp3",
+     "label": "Épisode 18",
+     "duration": 213
+    },
+    {
+     "file": "t2ep19.mp3",
+     "label": "Épisode 19",
+     "duration": 183.2
+    },
+    {
+     "file": "t2ep20.mp3",
+     "label": "Épisode 20",
+     "duration": 207.4
+    },
+    {
+     "file": "t2ep21.mp3",
+     "label": "Épisode 21",
+     "duration": 194.3
+    },
+    {
+     "file": "t2ep22.mp3",
+     "label": "Épisode 22",
+     "duration": 203
+    },
+    {
+     "file": "t2ep23.mp3",
+     "label": "Épisode 23",
+     "duration": 235.6
+    },
+    {
+     "file": "t2ep24.mp3",
+     "label": "Épisode 24",
+     "duration": 201
+    },
+    {
+     "file": "t2ep25.mp3",
+     "label": "Épisode 25",
+     "duration": 205
+    },
+    {
+     "file": "t2ep26.mp3",
+     "label": "Épisode 26",
+     "duration": 203.5
+    },
+    {
+     "file": "t2ep27.mp3",
+     "label": "Épisode 27",
+     "duration": 210.4
+    },
+    {
+     "file": "t2ep28.mp3",
+     "label": "Épisode 28",
+     "duration": 224.7
+    },
+    {
+     "file": "t2ep29.mp3",
+     "label": "Épisode 29",
+     "duration": 213.6
+    },
+    {
+     "file": "t2ep30.mp3",
+     "label": "Épisode 30",
+     "duration": 184.6
+    },
+    {
+     "file": "t2ep31.mp3",
+     "label": "Épisode 31",
+     "duration": 245.3
+    },
+    {
+     "file": "t2ep32.mp3",
+     "label": "Épisode 32",
+     "duration": 194.1
+    },
+    {
+     "file": "t2ep33.mp3",
+     "label": "Épisode 33",
+     "duration": 244.3
+    },
+    {
+     "file": "t2ep34.mp3",
+     "label": "Épisode 34",
+     "duration": 239
+    },
+    {
+     "file": "t2ep35.mp3",
+     "label": "Épisode 35",
+     "duration": 198.8
+    },
+    {
+     "file": "t2ep36.mp3",
+     "label": "Épisode 36",
+     "duration": 191.1
+    },
+    {
+     "file": "t2ep37.mp3",
+     "label": "Épisode 37",
+     "duration": 242.6
+    },
+    {
+     "file": "t2ep38.mp3",
+     "label": "Épisode 38",
+     "duration": 214
+    },
+    {
+     "file": "t2ep39.mp3",
+     "label": "Épisode 39",
+     "duration": 195.4
+    },
+    {
+     "file": "t2ep40.mp3",
+     "label": "Épisode 40",
+     "duration": 196.4
+    },
+    {
+     "file": "t2ep41.mp3",
+     "label": "Épisode 41",
+     "duration": 200.4
+    },
+    {
+     "file": "t2ep42.mp3",
+     "label": "Épisode 42",
+     "duration": 215
+    },
+    {
+     "file": "t2ep43.mp3",
+     "label": "Épisode 43",
+     "duration": 213.3
+    },
+    {
+     "file": "t2ep44.mp3",
+     "label": "Épisode 44",
+     "duration": 204.1
+    },
+    {
+     "file": "t2ep45.mp3",
+     "label": "Épisode 45",
+     "duration": 240
+    },
+    {
+     "file": "t2ep46.mp3",
+     "label": "Épisode 46",
+     "duration": 193.1
+    },
+    {
+     "file": "t2ep47.mp3",
+     "label": "Épisode 47",
+     "duration": 237.1
+    },
+    {
+     "file": "t2ep48.mp3",
+     "label": "Épisode 48",
+     "duration": 217.5
+    },
+    {
+     "file": "t2ep49.mp3",
+     "label": "Épisode 49",
+     "duration": 208.1
+    },
+    {
+     "file": "t2ep50.mp3",
+     "label": "Épisode 50",
+     "duration": 220.2
+    }
+   ]
   }
  ]
 }

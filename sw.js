@@ -6,12 +6,12 @@
  * fetch timeouts tuned for locked phones — the worker must stay out of that
  * path. Bump CACHE (and the ?v= entries) on every deploy, same as APP_VERSION.
  */
-const CACHE = 'dodo-v21';
+const CACHE = 'dodo-v22';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=21',
-  './style.css?v=21',
+  './app.js?v=22',
+  './style.css?v=22',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',

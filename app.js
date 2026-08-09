@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v21';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v22';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -1149,18 +1149,25 @@ async function loadHostedEpisodes() {
   }
   let deleted = [];
   try { deleted = JSON.parse(localStorage.getItem('deletedEps')) || []; } catch (e) {}
-  const cid = 'hosted';
-  compilations.push({ id: cid, name: idx.compilation, totalDuration: 0 });
-  idx.episodes.forEach((e, i) => {
+  // Multi-compilation index ({compilations: [{name, episodes}]}) with a
+  // fallback for the original single-compilation shape. The first compilation
+  // keeps the historic 'hosted' id so saved resume positions and shuffle
+  // history stay valid across the format change.
+  const comps = idx.compilations || [{ name: idx.compilation, episodes: idx.episodes }];
+  comps.forEach((comp, ci) => {
+  const cid = ci === 0 ? 'hosted' : 'hosted' + (ci + 1);
+  compilations.push({ id: cid, name: comp.name, totalDuration: 0 });
+  comp.episodes.forEach((e, i) => {
     if (deleted.includes(e.file)) return;
     episodes.push({
-      id: cid + '_' + e.file, compilationId: cid, compilationName: idx.compilation,
+      id: cid + '_' + e.file, compilationId: cid, compilationName: comp.name,
       index: i, startSec: 0, endSec: e.duration, duration: e.duration,
       // ?v= busts browser caches of stale audio (v=4: ep07.mp3 was truncated
       // to 0 bytes by the v14 retag — an appended empty episode stalled the
       // stream at its buffer edge, "stops after 2-3 episodes" on locked phones)
       label: e.label, src: 'episodes/' + e.file + '?v=4', file: e.file,
     });
+  });
   });
   hostedChecked = true;
   render();
@@ -1213,9 +1220,13 @@ async function serverDeleteEpisode(file, label) {
   const idxMeta = await ghApi('GET', 'episodes/index.json');
   if (idxMeta) {
     const idx = JSON.parse(atob(idxMeta.content.replace(/\n/g, '')));
-    const before = idx.episodes.length;
-    idx.episodes = idx.episodes.filter(e => e.file !== file);
-    if (idx.episodes.length !== before) {
+    // works on both index shapes: {compilations:[{episodes}]} and {episodes}
+    let changed = false;
+    for (const holder of (idx.compilations || [idx])) {
+      const kept = holder.episodes.filter(e => e.file !== file);
+      if (kept.length !== holder.episodes.length) { holder.episodes = kept; changed = true; }
+    }
+    if (changed) {
       await ghApi('PUT', 'episodes/index.json', {
         message: `Delete ${label} (${file})`,
         content: btoa(JSON.stringify(idx, null, 1)),
