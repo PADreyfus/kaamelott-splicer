@@ -15,7 +15,9 @@
       "PowerShell(git *)",
       "PowerShell(gh run *)",
       "Read(//c/Users/dreyf/AppData/Local/Temp/claude/C--Users-dreyf-my-repo-kaamelott-splicer//**)",
-      "Read(//c/Users/dreyf/AppData/Local/Temp/claude/C--Users-dreyf-my-repo-kaamelott-splicer/**)"
+      "Read(//c/Users/dreyf/AppData/Local/Temp/claude/C--Users-dreyf-my-repo-kaamelott-splicer/**)",
+      "Bash(node --check app.js)",
+      "Bash(node --check sw.js)"
     ]
   }
 }

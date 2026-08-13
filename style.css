@@ -197,9 +197,12 @@ h1 {
   font-size: 13px;
   color: var(--gold);
   margin: 12px 0 6px;
-  padding-bottom: 4px;
+  padding: 4px 0;
   border-bottom: 1px solid rgba(61, 52, 37, 0.4);
+  cursor: pointer;
+  user-select: none;
 }
+.comp-header.off { opacity: 0.45; }
 .ep-row {
   display: flex;
   align-items: center;

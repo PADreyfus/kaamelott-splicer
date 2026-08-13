@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v22';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v23';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -395,10 +395,38 @@ function episodeURL(ep) {
   return ep.url;
 }
 
+// Which books (compilations) are excluded from playback — toggled by tapping
+// a 🏰 header in the episode list, persisted per device. Playback and
+// prefetching only ever pick from the active books; downloads and the
+// episode data itself are unaffected.
+let disabledComps = new Set();
+try { disabledComps = new Set(JSON.parse(localStorage.getItem('disabledComps')) || []); } catch (e) {}
+
+function activeEpisodes() {
+  return episodes.filter(e => !disabledComps.has(e.compilationId));
+}
+
+function toggleComp(cid) {
+  if (disabledComps.has(cid)) {
+    disabledComps.delete(cid);
+  } else {
+    // never disable the last active book — playback needs somewhere to go
+    const activeIds = new Set(activeEpisodes().map(e => e.compilationId));
+    if (activeIds.size <= 1 && activeIds.has(cid)) return;
+    disabledComps.add(cid);
+  }
+  localStorage.setItem('disabledComps', JSON.stringify([...disabledComps]));
+  render();
+  if (playing) refillPrefetch(); // the upcoming episodes may have changed
+}
+
 function nextEpOf(ep) {
-  if (!episodes.length) return null;
-  const i = ep ? episodes.findIndex(e => e.id === ep.id) : -1;
-  return episodes[(i + 1) % episodes.length];
+  const list = activeEpisodes();
+  if (!list.length) return null;
+  // an ep from a just-disabled book isn't in the list: findIndex gives -1,
+  // so the chain continues at the first active episode
+  const i = ep ? list.findIndex(e => e.id === ep.id) : -1;
+  return list[(i + 1) % list.length];
 }
 
 // ============== GAPLESS STREAM (MediaSource) ==============
@@ -614,7 +642,8 @@ function offerResume() {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('resume')); } catch (e) {}
   const ep = saved && episodes.find(e => e.id === saved.id);
-  if (!ep || saved.off < 10 || saved.off > ep.duration - 20) return;
+  if (!ep || disabledComps.has(ep.compilationId)) return; // book switched off
+  if (saved.off < 10 || saved.off > ep.duration - 20) return;
   $('bResume').textContent = `▶ Reprendre ${ep.label} à ${fmt(saved.off)}`;
   $('resumeCard').style.display = '';
   $('bResume').onclick = () => playEp(ep, saved.off);
@@ -984,20 +1013,30 @@ function render() {
   $('bSleep').textContent = sleepLabel();
 
   // Episode list
-  $('epCount').textContent = episodes.length + ' épisode' + (episodes.length > 1 ? 's' : '');
+  const active = activeEpisodes();
+  $('epCount').textContent = (active.length === episodes.length)
+    ? episodes.length + ' épisode' + (episodes.length > 1 ? 's' : '')
+    : active.length + ' / ' + episodes.length + ' épisodes';
   const list = $('epList');
   list.innerHTML = '';
   // Render in list order — playback follows it, and 🔀 reorders it.
+  // Tapping a 🏰 header toggles that book in/out of the playback rotation;
+  // a disabled book keeps its (dimmed) header but hides its rows.
   let lastComp = null;
   episodes.forEach(ep => {
+    const compOff = disabledComps.has(ep.compilationId);
     if (ep.compilationId !== lastComp) {
       lastComp = ep.compilationId;
       const comp = compilations.find(c => c.id === ep.compilationId);
       const header = document.createElement('div');
-      header.className = 'comp-header';
-      header.textContent = '🏰 ' + (comp ? comp.name : ep.compilationName);
+      header.className = 'comp-header' + (compOff ? ' off' : '');
+      header.dataset.comp = ep.compilationId;
+      header.title = 'Toucher pour activer/désactiver ce livre';
+      header.textContent = '🏰 ' + (comp ? comp.name : ep.compilationName) +
+        (compOff ? ' · ✕ désactivé' : '');
       list.appendChild(header);
     }
+    if (compOff) return;
     const row = document.createElement('div');
     row.className = 'ep-row' + (currentEp?.id === ep.id ? ' playing' : '');
     const meta = ep.src
@@ -1021,6 +1060,7 @@ document.addEventListener('click', e => {
     if (ep) playEp(ep);
   }
   if (t.dataset.del) deleteEp(t.dataset.del);
+  if (t.dataset.comp) toggleComp(t.dataset.comp);
 });
 
 $('fileInput').addEventListener('change', e => {
