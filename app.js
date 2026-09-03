@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v24';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v25';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -356,6 +356,14 @@ let currentEp = null;
 let playing = false;
 let autoPlay = true;
 let skipIntro = localStorage.getItem('skipIntro') === '1';
+// Each episode opens with the horns intro, then a short scene, then the
+// series' theme music again ("le générique") before the body starts. The two
+// are skipped independently: SKIP_INTRO_SEC is the same for every episode,
+// while the générique sits at a per-episode position measured offline and
+// carried in episodes/index.json as [start, end] — the scene between them is
+// never touched. Episodes with no measured window (a locally loaded file)
+// simply never skip.
+let skipGen = localStorage.getItem('skipGen') === '1';
 // Sleep timer: the button cycles off → 15/30/45/60 min → fin d'épisode.
 // Minute modes fade the volume out over the last SLEEP_FADE_SEC and pause at
 // the deadline; 'ep' mode plays to the end of the current episode, fading its
@@ -728,7 +736,12 @@ audio.ontimeupdate = () => {
   if (!currentEp) return;
   if (playing && sleepTick()) return;
   if (playing && Date.now() - lastResumeSave > 5000) { lastResumeSave = Date.now(); saveResume(); }
-  if (!MSE_OK || !segments.length) return;
+  if (!MSE_OK) { // legacy path: currentTime is relative to the episode file
+    const g = skipGen && currentEp.gen;
+    if (g && audio.currentTime >= g[0] && audio.currentTime < g[1] - 0.3) audio.currentTime = g[1];
+    return;
+  }
+  if (!segments.length) return;
 
   // Crossed into the next segment? Update state — playback itself just glides.
   const seg = currentSegment();
@@ -740,6 +753,13 @@ audio.ontimeupdate = () => {
     }
     updateMediaSession();
     render();
+  }
+
+  // Jump over the générique. timeupdate fires ~4x/s, so at most a fraction of
+  // a second of music gets through; the target is always already buffered.
+  if (skipGen && seg && seg.ep.gen) {
+    const g0 = seg.start + seg.ep.gen[0], g1 = seg.start + seg.ep.gen[1];
+    if (audio.currentTime >= g0 && audio.currentTime < g1 - 0.3) audio.currentTime = g1;
   }
 
   // Auto off: stop at the end of the current episode.
@@ -1024,6 +1044,7 @@ function render() {
   $('bPlay').textContent = playing ? '⏸' : '▶';
   $('bAuto').classList.toggle('on', autoPlay);
   $('bSkipIntro').classList.toggle('on', skipIntro);
+  $('bSkipGen').classList.toggle('on', skipGen);
   $('bSleep').classList.toggle('on', sleepMode !== null);
   $('bSleep').textContent = sleepLabel();
 
@@ -1091,6 +1112,11 @@ $('bAuto').onclick = () => { autoPlay = !autoPlay; render(); };
 $('bSkipIntro').onclick = () => {
   skipIntro = !skipIntro;
   localStorage.setItem('skipIntro', skipIntro ? '1' : '0');
+  render();
+};
+$('bSkipGen').onclick = () => {
+  skipGen = !skipGen;
+  localStorage.setItem('skipGen', skipGen ? '1' : '0');
   render();
 };
 $('bSleep').onclick = toggleSleep;
@@ -1220,7 +1246,7 @@ async function loadHostedEpisodes() {
       // ?v= busts browser caches of stale audio (v=4: ep07.mp3 was truncated
       // to 0 bytes by the v14 retag — an appended empty episode stalled the
       // stream at its buffer edge, "stops after 2-3 episodes" on locked phones)
-      label: e.label, src: 'episodes/' + e.file + '?v=4', file: e.file,
+      label: e.label, src: 'episodes/' + e.file + '?v=4', file: e.file, gen: e.gen,
     });
   });
   });
