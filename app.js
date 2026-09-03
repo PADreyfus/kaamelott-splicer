@@ -15,12 +15,13 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v23';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v24';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
                              // are block-identical up to ~5.3 s, diverge at ~5.5)
 const NCC_THRESHOLD = 0.65;  // minimum correlation to accept a jingle match
+const CLUSTER_JUMP = 0.10;   // score gap that separates real jingles from noise
 const MIN_GAP = 120;         // minimum episode length in seconds
 const MIN_EPISODE = 5;       // discard segments shorter than this
 
@@ -296,12 +297,26 @@ async function analyzeFile(fileAB, onProgress, onStatus) {
   }
   accepted.sort((a, b) => a.time - b.time);
 
+  // Every real jingle is a near-copy of the fingerprint, so their scores form
+  // one tight cluster; a noisier rip (Livre II Tome 1) also yields music-shaped
+  // peaks that clear NCC_THRESHOLD but sit ~0.15 below that cluster, and each
+  // one splits an episode in two. So drop the tail below the widest score gap
+  // in the lower half of the peaks — but only when the gap is wide enough to be
+  // a cluster boundary, since on a clean rip the real jingles alone spread by
+  // up to 0.08 and there is no tail to cut.
+  const byScore = accepted.map(a => a.score).sort((a, b) => b - a);
+  let jump = 0, cutoff = 0;
+  for (let i = byScore.length >> 1; i < byScore.length - 1; i++) {
+    if (byScore[i] - byScore[i + 1] > jump) { jump = byScore[i] - byScore[i + 1]; cutoff = byScore[i + 1]; }
+  }
+  const jingles = jump >= CLUSTER_JUMP ? accepted.filter(a => a.score > cutoff) : accepted;
+
   // Split times are on the decoder clock (verified against user-checked
   // jingle positions 3:18 / 6:14 / 10:22 on the full file).
   const totalDur = timeTable[timeTable.length - 1];
   const splits = [
     0,
-    ...accepted
+    ...jingles
       .map(a => a.time)
       .filter(t => t >= MIN_GAP && t <= totalDur - MIN_GAP), // a final jingle with no episode after it is not a cut
     totalDur,
