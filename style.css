@@ -175,12 +175,25 @@ h1 {
 }
 
 /* Controls */
+/* Must wrap: the toggle row is five buttons wide and a phone is not. Without
+   wrapping the row overflows a centred flex line in BOTH directions and the
+   leftmost button ends up off-screen, unreachable. */
 .controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 14px;
   margin-bottom: 16px;
+}
+
+/* Phone: tighter toggles, and the two skip buttons drop their verb ("passer
+   l'intro" -> "Intro") so the row settles into two lines instead of three. */
+@media (max-width: 420px) {
+  .controls { gap: 8px; }
+  .controls .btn.toggle { padding: 9px 12px; font-size: 13px; }
+  #bSkipIntro .verb, #bSkipGen .verb { display: none; }
+  #bSkipIntro, #bSkipGen { text-transform: capitalize; }
 }
 
 /* Episode list */
