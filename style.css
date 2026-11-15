@@ -197,6 +197,8 @@ h1 {
 }
 
 /* Episode list */
+/* clips the list while it glides up one row (render) */
+.ep-card { overflow: hidden; }
 .list-head {
   display: flex;
   align-items: center;

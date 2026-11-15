@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v26';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v27';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -94,6 +94,75 @@ function blockFeatures(pcm, sr) {
     feats.push(bands);
   }
   return feats;
+}
+
+// ===================== LOUDNESS (ITU-R BS.1770 / EBU R128) =====================
+// Episodes come from different rips and books, so their levels differ by
+// several dB. Each episode's integrated loudness (LUFS) is measured once —
+// offline for hosted episodes (`lufs` in episodes/index.json), during
+// analysis for a locally loaded compilation — and playback scales the
+// volume so every episode sits at the same level (see episodeGain).
+
+const LOUD_BLOCK_SEC = 0.1; // energies kept per 100 ms; a gating block is 4 of them (400 ms, 75 % overlap)
+
+// K-weighting = BS.1770 high-shelf pre-filter + RLB high-pass, designed for
+// any sample rate exactly as libebur128 does.
+function kWeighting(sr) {
+  let f0 = 1681.974450955533, Q = 0.7071752369554196;
+  let K = Math.tan(Math.PI * f0 / sr);
+  const Vh = Math.pow(10, 3.999843853973347 / 20), Vb = Math.pow(Vh, 0.4996667741545416);
+  let a0 = 1 + K / Q + K * K;
+  const shelf = {
+    b0: (Vh + Vb * K / Q + K * K) / a0, b1: 2 * (K * K - Vh) / a0, b2: (Vh - Vb * K / Q + K * K) / a0,
+    a1: 2 * (K * K - 1) / a0, a2: (1 - K / Q + K * K) / a0,
+  };
+  f0 = 38.13547087602444; Q = 0.5003270373238773;
+  K = Math.tan(Math.PI * f0 / sr);
+  a0 = 1 + K / Q + K * K;
+  const hp = { b0: 1, b1: -2, b2: 1, a1: 2 * (K * K - 1) / a0, a2: (1 - K / Q + K * K) / a0 };
+  return [shelf, hp];
+}
+
+// K-weighted mean square of every 100 ms block, summed over channels
+// (Float32Array each, equal lengths) — the input of the gated measurement.
+function loudnessEnergies(channels, sr) {
+  const [s, h] = kWeighting(sr);
+  const blk = Math.round(sr * LOUD_BLOCK_SEC);
+  const n = Math.floor(channels[0].length / blk);
+  const out = new Float64Array(n);
+  for (const x of channels) {
+    // y = pre-filter output, z = high-pass output; y1/y2 double as the
+    // high-pass input history
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0, z1 = 0, z2 = 0;
+    for (let b = 0; b < n; b++) {
+      let acc = 0;
+      for (let i = b * blk, end = i + blk; i < end; i++) {
+        const xi = x[i];
+        const y = s.b0 * xi + s.b1 * x1 + s.b2 * x2 - s.a1 * y1 - s.a2 * y2;
+        const z = y - 2 * y1 + y2 - h.a1 * z1 - h.a2 * z2;
+        x2 = x1; x1 = xi; y2 = y1; y1 = y; z2 = z1; z1 = z;
+        acc += z * z;
+      }
+      out[b] += acc / blk;
+    }
+  }
+  return out;
+}
+
+// Gated integrated loudness in LUFS over energies[from, to): absolute gate
+// at -70 LUFS, then a relative gate 10 LU below the absolute-gated level.
+function integratedLoudness(energies, from = 0, to = energies.length) {
+  const lufs = z => -0.691 + 10 * Math.log10(z);
+  const blocks = [];
+  for (let i = Math.max(0, from); i + 4 <= to; i++) {
+    const z = (energies[i] + energies[i + 1] + energies[i + 2] + energies[i + 3]) / 4;
+    if (lufs(z) > -70) blocks.push(z);
+  }
+  if (!blocks.length) return null;
+  const mean = a => a.reduce((acc, v) => acc + v, 0) / a.length;
+  const rel = lufs(mean(blocks)) - 10;
+  const gated = blocks.filter(z => lufs(z) > rel);
+  return lufs(mean(gated.length ? gated : blocks));
 }
 
 // ===================== MP3 BYTE↔TIME MAPPING (VBR) =====================
@@ -230,6 +299,10 @@ async function analyzeFile(fileAB, onProgress, onStatus) {
 
   let jFeats = null, jNorm = 0, J = 0;
   const candidates = [];
+  // 100 ms loudness energies on the absolute (frame-index) clock, taken only
+  // from each chunk's own CHUNK_SEC core so the overlaps never count twice;
+  // per-episode loudness is gated over them once the cuts are known.
+  const loudT = [], loudE = [];
 
   for (let ci = 0; ci < chunks.length; ci++) {
     onStatus(`Analyse ${ci + 1}/${chunks.length}…`);
@@ -258,6 +331,15 @@ async function analyzeFile(fileAB, onProgress, onStatus) {
     // from decoder padding at the chunk edges).
     const walkedSpan = chunks[ci].endTime - chunks[ci].startTime;
     const timeScale = (buf.duration > 0 && walkedSpan > 0) ? walkedSpan / buf.duration : 1;
+
+    const chans = [];
+    for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
+    const energies = loudnessEnergies(chans, sr);
+    const coreFrom = ci * CHUNK_SEC, coreTo = ci === chunks.length - 1 ? Infinity : coreFrom + CHUNK_SEC;
+    for (let k = 0; k < energies.length; k++) {
+      const t = chunks[ci].startTime + (k + 0.5) * LOUD_BLOCK_SEC * timeScale;
+      if (t >= coreFrom && t < coreTo) { loudT.push(t); loudE.push(energies[k]); }
+    }
 
     const feats = blockFeatures(pcm, sr);
     const N = feats.length;
@@ -342,9 +424,18 @@ async function analyzeFile(fileAB, onProgress, onStatus) {
   // 'ended' for that episode. Start at the first real audio frame instead.
   if (xing) splitBytes[0] = findMp3Sync(bytes, xing.syncOff + 4);
 
+  // Integrated loudness of each episode (null when it is all silence).
+  const splitLufs = [];
+  for (let i = 0, k = 0; i < splits.length - 1; i++) {
+    while (k < loudT.length && loudT[k] < splits[i]) k++;
+    const k0 = k;
+    while (k < loudT.length && loudT[k] < splits[i + 1]) k++;
+    splitLufs.push(integratedLoudness(loudE, k0, k));
+  }
+
   try { ctx.close(); } catch (e) {}
   onProgress(1);
-  return { splitPoints: splits, splitBytes, totalDuration: totalDur };
+  return { splitPoints: splits, splitBytes, splitLufs, totalDuration: totalDur };
 }
 
 // ===================== APP STATE =====================
@@ -353,6 +444,7 @@ let compilations = [];   // { id, name, totalDuration }
 let episodes = [];       // { id, compilationId, compilationName, index, startSec, endSec, duration, label, startByte, endByte, url? }
 let sourceFiles = {};    // compilationId → File (episodes are byte slices of it)
 let currentEp = null;
+let lastListEpId = null; // episode at the top of the rendered list (render's slide)
 let playing = false;
 let autoPlay = true;
 let skipIntro = localStorage.getItem('skipIntro') === '1';
@@ -392,6 +484,67 @@ function fmt(s) {
   return h > 0
     ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
     : `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+// ===================== VOLUME LEVELLING =====================
+// Every episode plays at the loudness of the quietest one (measured spread
+// over the 150 hosted episodes: 7.6 LU). Attenuate-only, through
+// audio.volume — the knob the sleep fade already turns on a locked phone. A
+// Web Audio GainNode could also boost, but it would route the locked-screen
+// MediaSource stream through an AudioContext, which nothing here has proven
+// safe. Floor: never level more than LEVEL_MAX_CUT below the median, so one
+// freak-quiet local file can't drag everything down (it just plays at 1).
+const LEVEL_MAX_CUT = 6; // dB
+let levelTarget = null;  // LUFS every episode is brought down to
+let levelMedian = null;  // assumed loudness of an unmeasured episode
+let fadeLevel = 1;       // sleep-timer fade multiplier (1 = no fade)
+
+function updateLevelTarget() {
+  const l = episodes.map(e => e.lufs).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!l.length) { levelTarget = levelMedian = null; return; }
+  levelMedian = l[l.length >> 1];
+  levelTarget = Math.max(l[0], levelMedian - LEVEL_MAX_CUT);
+}
+
+function episodeGain(ep) {
+  if (levelTarget === null) return 1;
+  const lufs = Number.isFinite(ep.lufs) ? ep.lufs : levelMedian;
+  return Math.min(1, Math.pow(10, (levelTarget - lufs) / 20));
+}
+
+// The episode under the playhead (in MSE mode currentEp can lag a segment
+// crossing by one timeupdate).
+function playheadEp() {
+  const seg = MSE_OK ? currentSegment() : null;
+  return seg ? seg.ep : currentEp;
+}
+
+function applyVolume(ep = playheadEp()) {
+  audio.volume = Math.min(1, Math.max(0, (ep ? episodeGain(ep) : 1) * fadeLevel));
+}
+
+// timeupdate fires only ~4x/s, so switching the level there alone would let up
+// to 250 ms of the next episode's horns through at the previous episode's
+// level. When a boundary is close, arm a timer for its exact moment
+// (Chrome does not throttle timers of a page that is playing audio; if it
+// ever fires late, the next timeupdate still corrects the level).
+let levelTimer = null, levelTimerAt = -1;
+function armLevelSwitch() {
+  if (!MSE_OK || !playing) return;
+  const t = audio.currentTime;
+  const nxt = segments.find(s => s.start > t + 0.02);
+  if (!nxt || nxt.start - t > 1.5 || levelTimerAt === nxt.start) return;
+  clearTimeout(levelTimer);
+  levelTimerAt = nxt.start;
+  levelTimer = setTimeout(() => {
+    levelTimerAt = -1;
+    // paused meanwhile (sleep timer stops right before a boundary): level
+    // whatever sits under the playhead, not the episode it never reached
+    if (audio.paused) { applyVolume(); return; }
+    const dt = nxt.start - audio.currentTime;
+    if (dt > 0.1) { armLevelSwitch(); return; } // playback lagged (stall): aim again
+    applyVolume(dt > -0.5 ? nxt.ep : undefined); // -0.5: a seek elsewhere meanwhile
+  }, Math.max(0, (nxt.start - t) / (audio.playbackRate || 1) * 1000));
 }
 
 // ===================== PLAYBACK =====================
@@ -677,6 +830,7 @@ function playEp(ep, startOffset) {
   $('resumeCard').style.display = 'none'; // any start supersedes the offer
   currentEp = ep;
   markPlayed(ep.id);
+  applyVolume(ep);
   const off = startOffset ?? (skipIntro ? SKIP_INTRO_SEC : 0);
   if (MSE_OK) {
     teardownStream();
@@ -722,7 +876,7 @@ audio.onended = () => {
   if (MSE_OK) { stopPlay(); return; }
   if (sleepMode === 'ep') { sleepStop(); return; }
   if (!autoPlay || (typeof sleepMode === 'number' && Date.now() >= sleepUntil)) {
-    sleepMode = null; sleepUntil = null; audio.volume = 1;
+    sleepMode = null; sleepUntil = null; fadeLevel = 1; applyVolume();
     stopPlay();
     return;
   }
@@ -748,6 +902,7 @@ audio.ontimeupdate = () => {
   if (seg && seg.ep.id !== currentEp.id) {
     currentEp = seg.ep;
     markPlayed(seg.ep.id);
+    applyVolume(seg.ep);
     if (skipIntro && audio.currentTime < seg.start + SKIP_INTRO_SEC - 0.3) {
       audio.currentTime = seg.start + SKIP_INTRO_SEC;
     }
@@ -761,6 +916,11 @@ audio.ontimeupdate = () => {
     const g0 = seg.start + seg.ep.gen[0], g1 = seg.start + seg.ep.gen[1];
     if (audio.currentTime >= g0 && audio.currentTime < g1 - 0.3) audio.currentTime = g1;
   }
+
+  // Level: exact switch at the coming boundary, and re-assert every tick
+  // (cheap; currentSegment's 50 ms look-ahead keeps it from undoing the timer).
+  armLevelSwitch();
+  if (sleepMode === null) applyVolume();
 
   // Auto off: stop at the end of the current episode.
   const last = segments[segments.length - 1];
@@ -903,7 +1063,8 @@ function sleepTick() {
     fade = EP_FADE_SEC;
   }
   if (remaining <= 0.15) { sleepStop(); return true; }
-  audio.volume = Math.min(1, Math.max(0.02, remaining / fade));
+  fadeLevel = Math.min(1, Math.max(0.02, remaining / fade));
+  applyVolume();
   return false;
 }
 
@@ -911,7 +1072,7 @@ function sleepStop() {
   sleepMode = null;
   sleepUntil = null;
   if (playing) togglePause();
-  audio.volume = 1; // after the pause, so the fade never pops back up audibly
+  fadeLevel = 1; applyVolume(); // after the pause, so the fade never pops back up audibly
   render();
 }
 
@@ -919,7 +1080,7 @@ function toggleSleep() {
   const i = SLEEP_STEPS.indexOf(sleepMode); // -1 when off
   sleepMode = i === SLEEP_STEPS.length - 1 ? null : SLEEP_STEPS[i + 1];
   sleepUntil = typeof sleepMode === 'number' ? Date.now() + sleepMode * 60_000 : null;
-  audio.volume = 1; // changing modes mid-fade restarts from full volume
+  fadeLevel = 1; applyVolume(); // changing modes mid-fade restarts from full volume
   render();
 }
 
@@ -963,6 +1124,8 @@ function deleteEp(id) {
   if (currentEp?.id === id) { stopPlay(); currentEp = null; }
   if (ep.url) URL.revokeObjectURL(ep.url);
   episodes = episodes.filter(e => e.id !== id);
+  updateLevelTarget();
+  applyVolume();
   if (ep.file) {
     // Drop the downloaded copy too, and refresh the download counter.
     epCache().then(c => c && c.delete(ep.src)).then(updateDlButton).catch(() => {});
@@ -1009,6 +1172,7 @@ async function handleFiles(files) {
           index: i, startSec: s, endSec: e, duration: e - s,
           startByte: res.splitBytes[i], endByte: res.splitBytes[i + 1],
           label: 'Épisode ' + (i + 1),
+          lufs: res.splitLufs[i],
         });
       }
       $('loadSub').textContent = (res.splitPoints.length - 1) + ' épisodes détectés';
@@ -1018,6 +1182,7 @@ async function handleFiles(files) {
     }
   }
   $('loadArea').style.display = 'none';
+  updateLevelTarget();
   render();
 }
 
@@ -1054,12 +1219,25 @@ function render() {
     ? episodes.length + ' épisode' + (episodes.length > 1 ? 's' : '')
     : active.length + ' / ' + episodes.length + ' épisodes';
   const list = $('epList');
+  // The list reads as the play queue: it starts at the episode playing now,
+  // then the ones that play next; those already heard wrap to the bottom
+  // (playback loops, so that is also where they come back). When playback
+  // moves on, the list slides up one row under a fixed highlight instead of
+  // the highlight walking down the list. 🔀 reorders it.
+  const start = currentEp ? Math.max(0, episodes.findIndex(e => e.id === currentEp.id)) : 0;
+  const queue = episodes.slice(start).concat(episodes.slice(0, start));
+  // Slide: where the new current row sat before this render, relative to the
+  // list top (it is the list's first row after it).
+  const epChanged = (currentEp?.id ?? null) !== lastListEpId;
+  lastListEpId = currentEp?.id ?? null;
+  const prevRow = epChanged && currentEp &&
+    [...list.querySelectorAll('.ep-row')].find(r => r.dataset.row === currentEp.id);
+  const prevTop = prevRow ? prevRow.offsetTop - list.offsetTop : 0;
   list.innerHTML = '';
-  // Render in list order — playback follows it, and 🔀 reorders it.
   // Tapping a 🏰 header toggles that book in/out of the playback rotation;
   // a disabled book keeps its (dimmed) header but hides its rows.
   let lastComp = null;
-  episodes.forEach(ep => {
+  queue.forEach(ep => {
     const compOff = disabledComps.has(ep.compilationId);
     if (ep.compilationId !== lastComp) {
       lastComp = ep.compilationId;
@@ -1075,6 +1253,7 @@ function render() {
     if (compOff) return;
     const row = document.createElement('div');
     row.className = 'ep-row' + (currentEp?.id === ep.id ? ' playing' : '');
+    row.dataset.row = ep.id;
     const meta = ep.src
       ? fmt(ep.duration)
       : `${fmt(ep.startSec)} → ${fmt(ep.endSec)} · ${fmt(ep.duration)}`;
@@ -1085,6 +1264,18 @@ function render() {
       `<button class="btn-del" data-del="${ep.id}" title="Supprimer">✕</button>`;
     list.appendChild(row);
   });
+
+  // Glide the list up from where the new current row was. Only for a step of
+  // a few rows (auto-advance, ⏭); a tap far down the list just jumps.
+  const newRow = currentEp && [...list.querySelectorAll('.ep-row')].find(r => r.dataset.row === currentEp.id);
+  const delta = newRow ? prevTop - (newRow.offsetTop - list.offsetTop) : 0;
+  if (delta > 0 && delta <= 200 && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    list.style.transition = 'none';
+    list.style.transform = `translateY(${delta}px)`;
+    list.getBoundingClientRect(); // commit the start position
+    list.style.transition = 'transform 0.4s ease';
+    list.style.transform = '';
+  }
 }
 
 // ===================== EVENTS =====================
@@ -1093,7 +1284,12 @@ document.addEventListener('click', e => {
   const t = e.target;
   if (t.dataset.play) {
     const ep = episodes.find(x => x.id === t.dataset.play);
-    if (ep) playEp(ep);
+    if (ep) {
+      playEp(ep);
+      // the tapped row is now the list's first row — bring it (and the
+      // player above it) back into view if the page was scrolled down
+      if ($('epList').getBoundingClientRect().top < 0) window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   }
   if (t.dataset.del) deleteEp(t.dataset.del);
   if (t.dataset.comp) toggleComp(t.dataset.comp);
@@ -1127,7 +1323,7 @@ setInterval(() => {
   if (playing) {
     sleepTick();
   } else if (typeof sleepMode === 'number' && Date.now() >= sleepUntil) {
-    sleepMode = null; sleepUntil = null; audio.volume = 1;
+    sleepMode = null; sleepUntil = null; fadeLevel = 1; applyVolume();
     render();
   }
   $('bSleep').textContent = sleepLabel();
@@ -1247,10 +1443,12 @@ async function loadHostedEpisodes() {
       // to 0 bytes by the v14 retag — an appended empty episode stalled the
       // stream at its buffer edge, "stops after 2-3 episodes" on locked phones)
       label: e.label, src: 'episodes/' + e.file + '?v=4', file: e.file, gen: e.gen,
+      lufs: e.lufs,
     });
   });
   });
   hostedChecked = true;
+  updateLevelTarget();
   render();
   updateDlButton();
   offerResume();
