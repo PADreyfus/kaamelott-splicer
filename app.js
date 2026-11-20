@@ -15,7 +15,7 @@
  *    byte offset, then to the element's linear seek time.
  */
 
-const APP_VERSION = 'v27';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
+const APP_VERSION = 'v28';   // bump on every deploy (also index.html ?v= and sw.js CACHE/SHELL)
 
 const JINGLE_SEC = 2.6;      // length of the three-horns blast (fingerprint)
 const SKIP_INTRO_SEC = 5.3;  // full intro incl. musical sting (measured: episodes
@@ -98,10 +98,11 @@ function blockFeatures(pcm, sr) {
 
 // ===================== LOUDNESS (ITU-R BS.1770 / EBU R128) =====================
 // Episodes come from different rips and books, so their levels differ by
-// several dB. Each episode's integrated loudness (LUFS) is measured once —
-// offline for hosted episodes (`lufs` in episodes/index.json), during
-// analysis for a locally loaded compilation — and playback scales the
-// volume so every episode sits at the same level (see episodeGain).
+// several dB, and some have passages far louder than their dialogue. Each
+// episode's typical level and peak-reduction profile are measured once —
+// offline for hosted episodes (`level` + `duck` in episodes/index.json),
+// during analysis for a locally loaded compilation — and playback scales
+// the volume from them (see VOLUME LEVELLING).
 
 const LOUD_BLOCK_SEC = 0.1; // energies kept per 100 ms; a gating block is 4 of them (400 ms, 75 % overlap)
 
@@ -163,6 +164,94 @@ function integratedLoudness(energies, from = 0, to = energies.length) {
   const rel = lufs(mean(blocks)) - 10;
   const gated = blocks.filter(z => lufs(z) > rel);
   return lufs(mean(gated.length ? gated : blocks));
+}
+
+// Loudness of each `n`-block window starting at from, from+1, … (running sum).
+function windowLoudness(energies, from, to, n) {
+  const out = [];
+  let acc = 0;
+  for (let i = from; i < to; i++) {
+    acc += energies[i];
+    if (i - from >= n) acc -= energies[i - n];
+    if (i - from >= n - 1) out.push(-0.691 + 10 * Math.log10(Math.max(acc, 0) / n));
+  }
+  return out;
+}
+
+// The level an episode is levelled on: the median 3 s loudness while
+// something is being said (windows within 20 LU of the integrated level).
+// The integrated level is an ENERGY mean, so a few very loud moments drag it
+// up — levelling on it left the dialogue of a shouty episode (ep08) 3.7 dB
+// quieter than the rest. The median is what you hear most of the time.
+function typicalLevel(energies, from = 0, to = energies.length) {
+  const I = integratedLoudness(energies, from, to);
+  if (I === null) return null;
+  const S = windowLoudness(energies, from, to, 30).filter(v => v > -70 && v > I - 20);
+  if (!S.length) return I;
+  S.sort((a, b) => a - b);
+  return S[S.length >> 1];
+}
+
+// Peak reduction: passages that rise far above the episode's typical level
+// (shouting, music, a crash) are turned down to at most DUCK_SHORT_MAX dB
+// above it over 3 s, and DUCK_MOMENT_MAX dB over 400 ms. Normal speech
+// sits within ~+5 / +7 dB of its median, so it is never touched. Result: one
+// character per DUCK_STEP_SEC of the episode, the attenuation in dB in base
+// 36 ('0' = none … 'z' = 35 dB), trailing zeros dropped. playback ramps
+// in/out around each step (duckDb) and applies it through audio.volume.
+const DUCK_STEP_SEC = 0.4;
+const DUCK_SHORT_MAX = 6;
+const DUCK_MOMENT_MAX = 9;
+function duckProfile(energies, from, to, level) {
+  const n = to - from;
+  if (level === null || n <= 0) return '';
+  const need = new Float32Array(n); // dB per 100 ms block
+  windowLoudness(energies, from, to, 4).forEach((m, i) => {
+    const x = m - (level + DUCK_MOMENT_MAX);
+    for (let k = i; k < i + 4; k++) if (x > need[k]) need[k] = x;
+  });
+  // a 3 s window's excess goes to its middle second; overlapping windows
+  // cover a sustained loud passage end to end
+  windowLoudness(energies, from, to, 30).forEach((s, i) => {
+    const x = s - (level + DUCK_SHORT_MAX);
+    for (let k = i + 10; k < i + 20; k++) if (x > need[k]) need[k] = x;
+  });
+  const per = Math.round(DUCK_STEP_SEC / LOUD_BLOCK_SEC);
+  let out = '';
+  for (let j = 0; j * per < n; j++) {
+    let d = 0;
+    for (let k = j * per; k < Math.min(n, (j + 1) * per); k++) if (need[k] > d) d = need[k];
+    out += Math.min(35, Math.round(d)).toString(36);
+  }
+  return out.replace(/0+$/, '');
+}
+
+// Attenuation (≤ 0 dB) at `pos` seconds into an episode with this profile.
+// Each step's reduction is held DUCK_HOLD_SEC beyond its edges, ramped in
+// at DUCK_ATTACK dB/s before it and out at DUCK_RELEASE dB/s after — so the
+// volume is already down when a burst arrives (the playback position read
+// from timeupdate lags a little, and an Android Bluetooth link adds
+// ~0.2 s), and the steps audio.volume takes on a locked phone (~4 per
+// second) stay small. Linear in dB = the min over steps of a "tent".
+const DUCK_HOLD_SEC = 0.4;
+const DUCK_ATTACK = 15;  // dB/s
+const DUCK_RELEASE = 6;  // dB/s
+function duckDb(profile, pos) {
+  if (!profile) return 0;
+  const reach = DUCK_HOLD_SEC + 36 / DUCK_RELEASE;
+  const j0 = Math.max(0, Math.floor((pos - reach) / DUCK_STEP_SEC));
+  const j1 = Math.min(profile.length - 1, Math.floor((pos + reach) / DUCK_STEP_SEC));
+  let g = 0;
+  for (let j = j0; j <= j1; j++) {
+    const d = parseInt(profile[j], 36);
+    if (!d) continue;
+    const a = j * DUCK_STEP_SEC, b = a + DUCK_STEP_SEC;
+    const v = pos < a ? -d + Math.max(0, a - pos - DUCK_HOLD_SEC) * DUCK_ATTACK
+            : pos > b ? -d + Math.max(0, pos - b - DUCK_HOLD_SEC) * DUCK_RELEASE
+            : -d;
+    if (v < g) g = v;
+  }
+  return g;
 }
 
 // ===================== MP3 BYTE↔TIME MAPPING (VBR) =====================
@@ -424,18 +513,21 @@ async function analyzeFile(fileAB, onProgress, onStatus) {
   // 'ended' for that episode. Start at the first real audio frame instead.
   if (xing) splitBytes[0] = findMp3Sync(bytes, xing.syncOff + 4);
 
-  // Integrated loudness of each episode (null when it is all silence).
-  const splitLufs = [];
+  // Typical level and peak-reduction profile of each episode (level null
+  // when it is all silence).
+  const splitLevel = [], splitDuck = [];
   for (let i = 0, k = 0; i < splits.length - 1; i++) {
     while (k < loudT.length && loudT[k] < splits[i]) k++;
     const k0 = k;
     while (k < loudT.length && loudT[k] < splits[i + 1]) k++;
-    splitLufs.push(integratedLoudness(loudE, k0, k));
+    const level = typicalLevel(loudE, k0, k);
+    splitLevel.push(level);
+    splitDuck.push(duckProfile(loudE, k0, k, level));
   }
 
   try { ctx.close(); } catch (e) {}
   onProgress(1);
-  return { splitPoints: splits, splitBytes, splitLufs, totalDuration: totalDur };
+  return { splitPoints: splits, splitBytes, splitLevel, splitDuck, totalDuration: totalDur };
 }
 
 // ===================== APP STATE =====================
@@ -487,20 +579,34 @@ function fmt(s) {
 }
 
 // ===================== VOLUME LEVELLING =====================
-// Every episode plays at the loudness of the quietest one (measured spread
-// over the 150 hosted episodes: 7.6 LU). Attenuate-only, through
-// audio.volume — the knob the sleep fade already turns on a locked phone. A
-// Web Audio GainNode could also boost, but it would route the locked-screen
-// MediaSource stream through an AudioContext, which nothing here has proven
-// safe. Floor: never level more than LEVEL_MAX_CUT below the median, so one
-// freak-quiet local file can't drag everything down (it just plays at 1).
+// Two layers, both through audio.volume:
+//  1. per episode, a constant gain bringing its TYPICAL level (`level`, the
+//     median dialogue loudness — see typicalLevel) down to that of the
+//     quietest episode: everyone's dialogue at the same loudness;
+//  2. inside the episode, the `duck` profile turns down passages that rise
+//     far above that level (see duckProfile / duckDb).
+// Attenuate-only on purpose: audio.volume is the knob the sleep fade already
+// turns on a locked phone. A Web Audio GainNode/compressor could boost and
+// compress finer, but it would route the locked-screen MediaSource stream
+// through an AudioContext, which nothing here has proven safe. Floor: never
+// level more than LEVEL_MAX_CUT below the median, so one freak-quiet local
+// file can't drag everything down (it just plays at 1).
 const LEVEL_MAX_CUT = 6; // dB
-let levelTarget = null;  // LUFS every episode is brought down to
-let levelMedian = null;  // assumed loudness of an unmeasured episode
+// The profile is read this far ahead of currentTime: timeupdate (the only
+// clock on a locked phone) ticks every ~250 ms, so the value set now must
+// already hold for the next quarter second.
+const DUCK_LEAD_SEC = 0.25;
+let levelTarget = null;  // LUFS every episode's dialogue is brought down to
+let levelMedian = null;  // assumed level of an unmeasured episode
 let fadeLevel = 1;       // sleep-timer fade multiplier (1 = no fade)
 
+// `level` since v28; a v27 index.json still cached offline only has `lufs`.
+function epLevel(ep) {
+  return Number.isFinite(ep.level) ? ep.level : ep.lufs;
+}
+
 function updateLevelTarget() {
-  const l = episodes.map(e => e.lufs).filter(Number.isFinite).sort((a, b) => a - b);
+  const l = episodes.map(epLevel).filter(Number.isFinite).sort((a, b) => a - b);
   if (!l.length) { levelTarget = levelMedian = null; return; }
   levelMedian = l[l.length >> 1];
   levelTarget = Math.max(l[0], levelMedian - LEVEL_MAX_CUT);
@@ -508,8 +614,8 @@ function updateLevelTarget() {
 
 function episodeGain(ep) {
   if (levelTarget === null) return 1;
-  const lufs = Number.isFinite(ep.lufs) ? ep.lufs : levelMedian;
-  return Math.min(1, Math.pow(10, (levelTarget - lufs) / 20));
+  const lv = epLevel(ep);
+  return Math.min(1, Math.pow(10, (levelTarget - (Number.isFinite(lv) ? lv : levelMedian)) / 20));
 }
 
 // The episode under the playhead (in MSE mode currentEp can lag a segment
@@ -519,8 +625,20 @@ function playheadEp() {
   return seg ? seg.ep : currentEp;
 }
 
-function applyVolume(ep = playheadEp()) {
-  audio.volume = Math.min(1, Math.max(0, (ep ? episodeGain(ep) : 1) * fadeLevel));
+// Set the volume for `ep` at `pos` seconds into it — by default whatever is
+// under the playhead right now. Called from every timeupdate, every
+// animation frame while the screen is on, and at episode boundaries.
+function applyVolume(ep, pos) {
+  if (!ep) {
+    const seg = MSE_OK ? currentSegment() : null;
+    ep = seg ? seg.ep : currentEp;
+    pos = seg ? audio.currentTime - seg.start : audio.currentTime;
+  }
+  let v = fadeLevel;
+  if (ep) v *= episodeGain(ep) * Math.pow(10, duckDb(ep.duck, (pos || 0) + DUCK_LEAD_SEC) / 20);
+  v = Math.min(1, Math.max(0, v));
+  // skip no-op writes: each one fires 'volumechange', and this runs per frame
+  if (Math.abs(audio.volume - v) > 0.001) audio.volume = v;
 }
 
 // timeupdate fires only ~4x/s, so switching the level there alone would let up
@@ -543,7 +661,8 @@ function armLevelSwitch() {
     if (audio.paused) { applyVolume(); return; }
     const dt = nxt.start - audio.currentTime;
     if (dt > 0.1) { armLevelSwitch(); return; } // playback lagged (stall): aim again
-    applyVolume(dt > -0.5 ? nxt.ep : undefined); // -0.5: a seek elsewhere meanwhile
+    if (dt > -0.5) applyVolume(nxt.ep, Math.max(0, -dt)); // else a seek elsewhere meanwhile
+    else applyVolume();
   }, Math.max(0, (nxt.start - t) / (audio.playbackRate || 1) * 1000));
 }
 
@@ -830,8 +949,8 @@ function playEp(ep, startOffset) {
   $('resumeCard').style.display = 'none'; // any start supersedes the offer
   currentEp = ep;
   markPlayed(ep.id);
-  applyVolume(ep);
   const off = startOffset ?? (skipIntro ? SKIP_INTRO_SEC : 0);
+  applyVolume(ep, off);
   if (MSE_OK) {
     teardownStream();
     ms = new MediaSource();
@@ -902,7 +1021,7 @@ audio.ontimeupdate = () => {
   if (seg && seg.ep.id !== currentEp.id) {
     currentEp = seg.ep;
     markPlayed(seg.ep.id);
-    applyVolume(seg.ep);
+    applyVolume(seg.ep, audio.currentTime - seg.start);
     if (skipIntro && audio.currentTime < seg.start + SKIP_INTRO_SEC - 0.3) {
       audio.currentTime = seg.start + SKIP_INTRO_SEC;
     }
@@ -970,6 +1089,7 @@ function trackProgress() {
   const tick = () => {
     if (!playing || !currentEp) return;
     if (!seeking) setProgressUI(segElapsed());
+    if (sleepMode === null) applyVolume(); // smooth peak-reduction ramps while the screen is on
     progressRAF = requestAnimationFrame(tick);
   };
   progressRAF = requestAnimationFrame(tick);
@@ -1022,23 +1142,65 @@ function playNext() {
   if (nxt) playEp(nxt);
 }
 
-function shuffleEpisodes() {
-  for (let i = episodes.length - 1; i > 0; i--) {
+function shuffledCopy(list) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [episodes[i], episodes[j]] = [episodes[j], episodes[i]];
+    [a[i], a[j]] = [a[j], a[i]];
   }
-  // Episodes heard in the last few nights go to the back of the order (stable
-  // partition, so the shuffle stays random within each group) — a night of
-  // listening won't replay what yesterday's night already covered.
-  const RECENT_MS = 72 * 3600 * 1000;
+  return a;
+}
+
+// 🔀 = least recently heard first. Episodes never heard come first (random
+// order), then the heard ones from the longest ago, shuffled within thirds so
+// every shuffle differs while the last nights' episodes stay at the very
+// back — every episode comes round before any repeats. (It used to be a
+// plain shuffle with only the last 72 h pushed back: after three nights
+// those episodes were back in the draw while ~100 others were still unheard.)
+function shuffleEpisodes() {
   const m = lastPlayedMap();
-  const now = Date.now();
-  const fresh = [], recent = [];
-  for (const ep of episodes) (now - (m[ep.id] || 0) < RECENT_MS ? recent : fresh).push(ep);
-  episodes = fresh.concat(recent);
+  const heard = episodes.filter(e => m[e.id]).sort((a, b) => m[a.id] - m[b.id]);
+  const tier = Math.max(1, Math.ceil(heard.length / 3));
+  let order = shuffledCopy(episodes.filter(e => !m[e.id]));
+  for (let i = 0; i < heard.length; i += tier) order = order.concat(shuffledCopy(heard.slice(i, i + tier)));
+  // What is already lined up stays at the head of the queue: the current
+  // episode, and while streaming the episodes already appended after it —
+  // they play next whatever the order, so the new order picks up after them
+  // (otherwise the chain continued from wherever the first of them landed
+  // in the new order, skipping its head).
+  if (currentEp) {
+    const head = [currentEp];
+    const cur = MSE_OK && playing ? currentSegment() : null;
+    if (cur) for (const sg of segments) if (sg.start > cur.start && !head.includes(sg.ep)) head.push(sg.ep);
+    order = head.concat(order.filter(e => !head.includes(e)));
+  }
+  episodes = order;
+  saveOrder();
   render();
   if (!playing) playNext();
   else refillPrefetch(); // order changed — predownload the new next episodes
+}
+
+// The queue order survives restarts. Without this every launch fell back to
+// book order and ▶ started Livre I's first episodes again, night after night.
+function saveOrder() {
+  try { localStorage.setItem('queueOrder', JSON.stringify(episodes.map(e => e.id))); } catch (e) {}
+}
+
+// At launch: put the episodes back in the saved order (ones it does not know
+// — a new book — go at the end, in book order), then turn the circular queue
+// so it starts right after the last episode heard: ▶ carries on where the
+// previous night stopped ("Reprendre" still offers the unfinished one).
+function restoreQueue() {
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem('queueOrder')) || []; } catch (e) {}
+  const rank = new Map(saved.map((id, i) => [id, i]));
+  episodes = episodes.filter(e => rank.has(e.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id))
+    .concat(episodes.filter(e => !rank.has(e.id)));
+  const m = lastPlayedMap();
+  let last = -1;
+  episodes.forEach((e, i) => { if (m[e.id] && (last < 0 || m[e.id] > m[episodes[last].id])) last = i; });
+  if (last >= 0) episodes = episodes.slice(last + 1).concat(episodes.slice(0, last + 1));
 }
 
 // Drives the armed sleep timer: fades the volume as the stop approaches and
@@ -1172,7 +1334,7 @@ async function handleFiles(files) {
           index: i, startSec: s, endSec: e, duration: e - s,
           startByte: res.splitBytes[i], endByte: res.splitBytes[i + 1],
           label: 'Épisode ' + (i + 1),
-          lufs: res.splitLufs[i],
+          level: res.splitLevel[i], duck: res.splitDuck[i],
         });
       }
       $('loadSub').textContent = (res.splitPoints.length - 1) + ' épisodes détectés';
@@ -1443,11 +1605,12 @@ async function loadHostedEpisodes() {
       // to 0 bytes by the v14 retag — an appended empty episode stalled the
       // stream at its buffer edge, "stops after 2-3 episodes" on locked phones)
       label: e.label, src: 'episodes/' + e.file + '?v=4', file: e.file, gen: e.gen,
-      lufs: e.lufs,
+      level: e.level, lufs: e.lufs, duck: e.duck,
     });
   });
   });
   hostedChecked = true;
+  restoreQueue();
   updateLevelTarget();
   render();
   updateDlButton();
